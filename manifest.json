@@ -1,0 +1,15 @@
+{
+  "manifest_version": 2,
+  "name": "Whiteboard Image Collector",
+  "version": "0.1.0",
+  "description": "Add images, links, and screenshots to a movable whiteboard.",
+  "browser_action": {
+    "default_title": "Open Whiteboard"
+  },
+  "permissions": ["storage", "tabs", "activeTab", "contextMenus"],
+  "background": {
+    "scripts": ["src/background.js"],
+    "persistent": true
+  },
+  "icons": {}
+}
