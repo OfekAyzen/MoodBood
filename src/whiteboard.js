@@ -40,16 +40,26 @@ function createItemElement(item) {
     img.decoding = "async";
     body.appendChild(img);
   } else if (item.type === "youtube" && item.src) {
-    body.appendChild(createVideoElement("YouTube Video", item.src, "youtube"));
+    const videoElement = createVideoElement(
+      "YouTube Video",
+      item.src,
+      "youtube"
+    );
+    videoElement.classList.add("wb-youtube-video");
+    body.appendChild(videoElement);
   } else if (item.type === "video" && item.src) {
     body.appendChild(createVideoElement("Video", item.src, "video"));
   } else if (item.type === "link" && item.url) {
     // If link is YouTube, render embedded player for a better experience
     const yt = parseYouTube(item.url);
     if (yt) {
-      body.appendChild(
-        createVideoElement("YouTube Video", yt.embedUrl, "youtube")
+      const videoElement = createVideoElement(
+        "YouTube Video",
+        yt.embedUrl,
+        "youtube"
       );
+      videoElement.classList.add("wb-youtube-video");
+      body.appendChild(videoElement);
     } else {
       const wrap = document.createElement("div");
       wrap.className = "wb-link";
@@ -80,8 +90,9 @@ function createItemElement(item) {
     }
   });
 
-  // Dragging
+  // Dragging and resizing
   enableDrag(node, item);
+  enableResize(node, item);
 
   return node;
 }
@@ -94,6 +105,11 @@ function enableDrag(node, item) {
   function onMouseDown(ev) {
     if (ev.button !== 0) return;
 
+    // Don't start drag if clicking on resize handles
+    if (ev.target.classList.contains("wb-resize-handle")) {
+      return;
+    }
+
     // For video items, only allow dragging from the header
     if (
       (item.type === "youtube" || item.type === "video") &&
@@ -102,6 +118,9 @@ function enableDrag(node, item) {
       return; // Don't start drag if not clicking on header
     }
 
+    ev.preventDefault();
+    ev.stopPropagation();
+
     dragging = true;
     // Bring to front
     item.z = Date.now();
@@ -109,16 +128,22 @@ function enableDrag(node, item) {
     offsetX = ev.clientX - node.offsetLeft;
     offsetY = ev.clientY - node.offsetTop;
 
-    document.addEventListener("mousemove", onMouseMove);
+    // Add dragging class for visual feedback
+    node.classList.add("wb-dragging");
+
+    document.addEventListener("mousemove", onMouseMove, { passive: false });
     document.addEventListener("mouseup", onMouseUp);
   }
 
-  async function onMouseUp() {
+  async function onMouseUp(ev) {
     if (!dragging) return;
 
     dragging = false;
+    node.classList.remove("wb-dragging");
+
     document.removeEventListener("mousemove", onMouseMove);
     document.removeEventListener("mouseup", onMouseUp);
+
     // Persist final position
     const items = await readItems();
     const idx = items.findIndex((i) => i.id === item.id);
@@ -133,6 +158,7 @@ function enableDrag(node, item) {
   function onMouseMove(ev) {
     if (!dragging) return;
 
+    ev.preventDefault();
     const x = ev.clientX - offsetX;
     const y = ev.clientY - offsetY;
     node.style.left = x + "px";
@@ -140,6 +166,106 @@ function enableDrag(node, item) {
   }
 
   node.addEventListener("mousedown", onMouseDown);
+}
+
+function enableResize(node, item) {
+  let resizing = false;
+  let resizeHandle = null;
+  let startX = 0,
+    startY = 0;
+  let startWidth = 0,
+    startHeight = 0;
+  let startLeft = 0,
+    startTop = 0;
+
+  // Create resize handles
+  const handles = ["nw", "ne", "sw", "se"]; // northwest, northeast, southwest, southeast
+  handles.forEach((handle) => {
+    const handleEl = document.createElement("div");
+    handleEl.className = `wb-resize-handle wb-resize-${handle}`;
+    handleEl.addEventListener("mousedown", (e) => onResizeStart(e, handle));
+    node.appendChild(handleEl);
+  });
+
+  function onResizeStart(ev, handle) {
+    ev.preventDefault();
+    ev.stopPropagation();
+
+    resizing = true;
+    resizeHandle = handle;
+    startX = ev.clientX;
+    startY = ev.clientY;
+    startWidth = node.offsetWidth;
+    startHeight = node.offsetHeight;
+    startLeft = node.offsetLeft;
+    startTop = node.offsetTop;
+
+    document.addEventListener("mousemove", onResizeMove);
+    document.addEventListener("mouseup", onResizeEnd);
+  }
+
+  function onResizeMove(ev) {
+    if (!resizing) return;
+
+    const deltaX = ev.clientX - startX;
+    const deltaY = ev.clientY - startY;
+
+    let newWidth = startWidth;
+    let newHeight = startHeight;
+    let newLeft = startLeft;
+    let newTop = startTop;
+
+    // Calculate new dimensions based on handle
+    switch (resizeHandle) {
+      case "se": // southeast - bottom right
+        newWidth = Math.max(100, startWidth + deltaX);
+        newHeight = Math.max(80, startHeight + deltaY);
+        break;
+      case "sw": // southwest - bottom left
+        newWidth = Math.max(100, startWidth - deltaX);
+        newHeight = Math.max(80, startHeight + deltaY);
+        newLeft = startLeft + (startWidth - newWidth);
+        break;
+      case "ne": // northeast - top right
+        newWidth = Math.max(100, startWidth + deltaX);
+        newHeight = Math.max(80, startHeight - deltaY);
+        newTop = startTop + (startHeight - newHeight);
+        break;
+      case "nw": // northwest - top left
+        newWidth = Math.max(100, startWidth - deltaX);
+        newHeight = Math.max(80, startHeight - deltaY);
+        newLeft = startLeft + (startWidth - newWidth);
+        newTop = startTop + (startHeight - newHeight);
+        break;
+    }
+
+    // Apply new dimensions
+    node.style.width = newWidth + "px";
+    node.style.height = newHeight + "px";
+    node.style.left = newLeft + "px";
+    node.style.top = newTop + "px";
+  }
+
+  async function onResizeEnd() {
+    if (!resizing) return;
+
+    resizing = false;
+    resizeHandle = null;
+
+    document.removeEventListener("mousemove", onResizeMove);
+    document.removeEventListener("mouseup", onResizeEnd);
+
+    // Persist new dimensions
+    const items = await readItems();
+    const idx = items.findIndex((i) => i.id === item.id);
+    if (idx !== -1) {
+      items[idx].w = parseInt(node.style.width, 10) || 200;
+      items[idx].h = parseInt(node.style.height, 10) || 150;
+      items[idx].x = parseInt(node.style.left, 10) || 0;
+      items[idx].y = parseInt(node.style.top, 10) || 0;
+      await writeItems(items);
+    }
+  }
 }
 
 async function render() {
@@ -193,11 +319,16 @@ function createVideoElement(title, src, type) {
   const container = document.createElement("div");
   container.className = "wb-video-container";
 
-  // Header bar for dragging
+  // Header bar for dragging (hidden by default for YouTube)
   const header = document.createElement("div");
   header.className = "wb-video-header";
   header.textContent = title;
   header.draggable = false;
+
+  // Hide header by default for YouTube videos
+  if (type === "youtube") {
+    header.style.transform = "translateY(-100%)";
+  }
 
   // Video content area
   const content = document.createElement("div");
@@ -212,6 +343,17 @@ function createVideoElement(title, src, type) {
     iframe.frameBorder = "0";
     iframe.tabIndex = -1;
     content.appendChild(iframe);
+
+    // Try to get YouTube video title
+    fetchYouTubeTitle(src)
+      .then((videoTitle) => {
+        if (videoTitle) {
+          header.textContent = videoTitle;
+        }
+      })
+      .catch(() => {
+        // Keep default title if fetch fails
+      });
   } else if (type === "video") {
     const video = document.createElement("video");
     video.src = src;
@@ -223,7 +365,41 @@ function createVideoElement(title, src, type) {
 
   container.appendChild(header);
   container.appendChild(content);
+
+  // Add hover listeners for YouTube videos
+  if (type === "youtube") {
+    container.addEventListener("mouseenter", () => {
+      header.style.transform = "translateY(0)";
+    });
+
+    container.addEventListener("mouseleave", () => {
+      header.style.transform = "translateY(-100%)";
+    });
+  }
+
   return container;
+}
+
+async function fetchYouTubeTitle(embedUrl) {
+  try {
+    // Extract video ID from embed URL
+    const match = embedUrl.match(/\/embed\/([^?]+)/);
+    if (!match) return null;
+
+    const videoId = match[1];
+
+    // Use YouTube oEmbed API to get video title
+    const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+
+    const response = await fetch(oembedUrl);
+    if (!response.ok) return null;
+
+    const data = await response.json();
+    return data.title || null;
+  } catch (error) {
+    console.warn("Failed to fetch YouTube title:", error);
+    return null;
+  }
 }
 
 function parseYouTubeStart(startLike) {
