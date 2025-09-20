@@ -89,6 +89,12 @@ body {
   border-radius: 8px;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
   overflow: hidden;
+  cursor: grab;
+}
+
+.wb-item:hover {
+  cursor: grab;
+  border-color: rgba(255, 255, 255, 0.2);
 }
 
 .wb-item .wb-item-body {
@@ -97,7 +103,10 @@ body {
 
 .wb-item img {
   display: block;
-  max-width: 100%;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
 }
 
 .wb-item video {
@@ -210,13 +219,58 @@ body {
   position: absolute;
   top: 6px;
   right: 6px;
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.7);
   color: var(--text);
   border: none;
   border-radius: 6px;
   cursor: pointer;
   width: 24px;
   height: 24px;
+  opacity: 0;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.wb-crop {
+  position: absolute;
+  top: 6px;
+  right: 36px;
+  background: rgba(0, 0, 0, 0.7);
+  color: var(--text);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: all 0.2s ease;
+}
+
+/* Show buttons on hover */
+.wb-item:hover .wb-close,
+.wb-item:hover .wb-crop {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.8);
+  transform: scale(1.05);
+}
+
+/* Hover effects for individual buttons */
+.wb-close:hover {
+  background: rgba(239, 68, 68, 0.9);
+  color: white;
+}
+
+.wb-crop:hover {
+  background: rgba(96, 165, 250, 0.9);
+  color: white;
 }
 
 .wb-item:focus-within,
@@ -275,4 +329,118 @@ body {
   bottom: -4px;
   right: -4px;
   cursor: se-resize;
+}
+
+/* Crop overlay styles */
+.wb-crop-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  z-index: 2147483647; /* Maximum z-index value */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* When crop overlay is active, lower all whiteboard items */
+.wb-crop-overlay-active .wb-item {
+  z-index: 1 !important;
+}
+
+.wb-crop-container {
+  position: relative;
+  background: white;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  overflow: visible;
+  max-width: 90vw;
+  max-height: 90vh;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  padding-bottom: 50px;
+}
+
+.wb-crop-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  user-select: none;
+  pointer-events: none;
+}
+
+.wb-crop-selection {
+  position: absolute;
+  border: 2px solid var(--accent);
+  background: rgba(96, 165, 250, 0.1);
+  cursor: move;
+}
+
+.wb-crop-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border: 1px solid white;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.wb-crop-handle-nw {
+  top: -4px;
+  left: -4px;
+  cursor: nw-resize;
+}
+.wb-crop-handle-ne {
+  top: -4px;
+  right: -4px;
+  cursor: ne-resize;
+}
+.wb-crop-handle-sw {
+  bottom: -4px;
+  left: -4px;
+  cursor: sw-resize;
+}
+.wb-crop-handle-se {
+  bottom: -4px;
+  right: -4px;
+  cursor: se-resize;
+}
+
+.wb-crop-controls {
+  position: absolute;
+  bottom: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.7);
+  padding: 8px;
+  border-radius: 6px;
+}
+
+.wb-crop-btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  z-index: 10;
+  position: relative;
+}
+
+.wb-crop-btn:hover {
+  background: #4f9eff;
+}
+
+.wb-crop-btn.cancel {
+  background: var(--danger);
+}
+
+.wb-crop-btn.cancel:hover {
+  background: #dc2626;
 }

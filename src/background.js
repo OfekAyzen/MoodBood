@@ -144,3 +144,18 @@ API.contextMenus.onClicked.addListener(async (info, tab) => {
     console.error("Context menu error:", err);
   }
 });
+
+// Handle messages from content script
+API.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+  try {
+    if (message.action === "addImageToWhiteboard") {
+      await addImageItem(message.src);
+      await openOrFocusWhiteboard();
+      sendResponse({ success: true });
+    }
+  } catch (err) {
+    console.error("Message handling error:", err);
+    sendResponse({ success: false, error: err.message });
+  }
+  return true; // Keep message channel open for async response
+});

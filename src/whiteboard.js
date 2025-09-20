@@ -38,7 +38,24 @@ function createItemElement(item) {
     img.src = item.src;
     img.alt = "image";
     img.decoding = "async";
+
+    // Store original aspect ratio when image loads
+    img.onload = function () {
+      const originalAspectRatio = this.naturalWidth / this.naturalHeight;
+      node.dataset.originalAspectRatio = originalAspectRatio;
+    };
+
     body.appendChild(img);
+
+    // Add crop button event listener for images
+    const cropBtn = node.querySelector(".wb-crop");
+    if (cropBtn) {
+      cropBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        startCrop(node, item);
+      });
+    }
   } else if (item.type === "youtube" && item.src) {
     const videoElement = createVideoElement(
       "YouTube Video",
@@ -80,15 +97,20 @@ function createItemElement(item) {
   }
 
   // Close button
-  node.querySelector(".wb-close").addEventListener("click", async () => {
-    const items = await readItems();
-    const idx = items.findIndex((i) => i.id === item.id);
-    if (idx !== -1) {
-      items.splice(idx, 1);
-      await writeItems(items);
-      node.remove();
-    }
-  });
+  const closeBtn = node.querySelector(".wb-close");
+  if (closeBtn) {
+    closeBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const items = await readItems();
+      const idx = items.findIndex((i) => i.id === item.id);
+      if (idx !== -1) {
+        items.splice(idx, 1);
+        await writeItems(items);
+        node.remove();
+      }
+    });
+  }
 
   // Dragging and resizing
   enableDrag(node, item);
@@ -105,8 +127,14 @@ function enableDrag(node, item) {
   function onMouseDown(ev) {
     if (ev.button !== 0) return;
 
-    // Don't start drag if clicking on resize handles
-    if (ev.target.classList.contains("wb-resize-handle")) {
+    // Don't start drag if clicking on buttons or resize handles
+    if (
+      ev.target.classList.contains("wb-resize-handle") ||
+      ev.target.classList.contains("wb-close") ||
+      ev.target.classList.contains("wb-crop") ||
+      ev.target.closest(".wb-close") ||
+      ev.target.closest(".wb-crop")
+    ) {
       return;
     }
 
@@ -210,30 +238,34 @@ function enableResize(node, item) {
     const deltaX = ev.clientX - startX;
     const deltaY = ev.clientY - startY;
 
+    // Use original aspect ratio if available, otherwise use current aspect ratio
+    const originalAspectRatio = parseFloat(node.dataset.originalAspectRatio);
+    const aspectRatio = originalAspectRatio || startWidth / startHeight;
+
     let newWidth = startWidth;
     let newHeight = startHeight;
     let newLeft = startLeft;
     let newTop = startTop;
 
-    // Calculate new dimensions based on handle
+    // Calculate new dimensions based on handle while maintaining aspect ratio
     switch (resizeHandle) {
       case "se": // southeast - bottom right
         newWidth = Math.max(100, startWidth + deltaX);
-        newHeight = Math.max(80, startHeight + deltaY);
+        newHeight = newWidth / aspectRatio;
         break;
       case "sw": // southwest - bottom left
         newWidth = Math.max(100, startWidth - deltaX);
-        newHeight = Math.max(80, startHeight + deltaY);
+        newHeight = newWidth / aspectRatio;
         newLeft = startLeft + (startWidth - newWidth);
         break;
       case "ne": // northeast - top right
-        newWidth = Math.max(100, startWidth + deltaX);
         newHeight = Math.max(80, startHeight - deltaY);
+        newWidth = newHeight * aspectRatio;
         newTop = startTop + (startHeight - newHeight);
         break;
       case "nw": // northwest - top left
-        newWidth = Math.max(100, startWidth - deltaX);
         newHeight = Math.max(80, startHeight - deltaY);
+        newWidth = newHeight * aspectRatio;
         newLeft = startLeft + (startWidth - newWidth);
         newTop = startTop + (startHeight - newHeight);
         break;
@@ -609,6 +641,384 @@ function blobToDataUrl(blob) {
     fr.onerror = reject;
     fr.readAsDataURL(blob);
   });
+}
+
+// Cropping functionality
+function startCrop(node, item) {
+  const img = node.querySelector("img");
+  if (!img) return;
+
+  // Create crop overlay
+  const overlay = document.createElement("div");
+  overlay.className = "wb-crop-overlay";
+
+  const container = document.createElement("div");
+  container.className = "wb-crop-container";
+
+  const cropImg = document.createElement("img");
+  cropImg.className = "wb-crop-image";
+  cropImg.crossOrigin = "anonymous"; // Try to allow cross-origin access
+  cropImg.src = img.src;
+  cropImg.alt = "Crop image";
+
+  const selection = document.createElement("div");
+  selection.className = "wb-crop-selection";
+
+  const controls = document.createElement("div");
+  controls.className = "wb-crop-controls";
+
+  const cropBtn = document.createElement("button");
+  cropBtn.className = "wb-crop-btn";
+  cropBtn.textContent = "Crop";
+  cropBtn.style.backgroundColor = "green"; // Make it more visible for testing
+  cropBtn.style.fontSize = "14px";
+  cropBtn.style.padding = "8px 16px";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "wb-crop-btn cancel";
+  cancelBtn.textContent = "Cancel";
+
+  controls.appendChild(cropBtn);
+  controls.appendChild(cancelBtn);
+
+  console.log("Controls created:", controls);
+  console.log("Crop button:", cropBtn);
+  console.log("Cancel button:", cancelBtn);
+
+  container.appendChild(cropImg);
+  container.appendChild(selection);
+  container.appendChild(controls);
+  overlay.appendChild(container);
+
+  document.body.appendChild(overlay);
+  document.body.classList.add("wb-crop-overlay-active");
+
+  // Initialize crop selection
+  let isDragging = false;
+  let isResizing = false;
+  let resizeHandle = null;
+  let startX = 0,
+    startY = 0;
+  let selectionRect = { x: 50, y: 50, width: 200, height: 150 };
+  let initialAspectRatio = selectionRect.width / selectionRect.height;
+
+  function updateSelection() {
+    selection.style.left = selectionRect.x + "px";
+    selection.style.top = selectionRect.y + "px";
+    selection.style.width = selectionRect.width + "px";
+    selection.style.height = selectionRect.height + "px";
+  }
+
+  function createHandles() {
+    const handles = ["nw", "ne", "sw", "se"];
+    handles.forEach((handle) => {
+      const handleEl = document.createElement("div");
+      handleEl.className = `wb-crop-handle wb-crop-handle-${handle}`;
+      handleEl.addEventListener("mousedown", (e) => startResize(e, handle));
+      selection.appendChild(handleEl);
+    });
+  }
+
+  function startResize(e, handle) {
+    e.preventDefault();
+    e.stopPropagation();
+    isResizing = true;
+    resizeHandle = handle;
+    startX = e.clientX;
+    startY = e.clientY;
+
+    // Store initial aspect ratio
+    initialAspectRatio = selectionRect.width / selectionRect.height;
+
+    document.addEventListener("mousemove", onResizeMove);
+    document.addEventListener("mouseup", onResizeEnd);
+  }
+
+  function onResizeMove(e) {
+    if (!isResizing) return;
+
+    const deltaX = e.clientX - startX;
+    const deltaY = e.clientY - startY;
+    const containerRect = container.getBoundingClientRect();
+
+    switch (resizeHandle) {
+      case "se":
+        selectionRect.width = Math.max(
+          50,
+          Math.min(
+            selectionRect.width + deltaX,
+            containerRect.width - selectionRect.x
+          )
+        );
+        selectionRect.height = selectionRect.width / initialAspectRatio;
+        // Ensure height doesn't exceed container bounds
+        if (selectionRect.y + selectionRect.height > containerRect.height) {
+          selectionRect.height = containerRect.height - selectionRect.y;
+          selectionRect.width = selectionRect.height * initialAspectRatio;
+        }
+        break;
+      case "sw":
+        const newWidth = Math.max(
+          50,
+          Math.min(
+            selectionRect.width - deltaX,
+            selectionRect.x + selectionRect.width
+          )
+        );
+        const newHeight = newWidth / initialAspectRatio;
+        // Ensure height doesn't exceed container bounds
+        if (selectionRect.y + newHeight > containerRect.height) {
+          selectionRect.height = containerRect.height - selectionRect.y;
+          selectionRect.width = selectionRect.height * initialAspectRatio;
+        } else {
+          selectionRect.width = newWidth;
+          selectionRect.height = newHeight;
+        }
+        selectionRect.x = selectionRect.x + (selectionRect.width - newWidth);
+        break;
+      case "ne":
+        const newHeightNE = Math.max(
+          50,
+          Math.min(
+            selectionRect.height - deltaY,
+            selectionRect.y + selectionRect.height
+          )
+        );
+        const newWidthNE = newHeightNE * initialAspectRatio;
+        // Ensure width doesn't exceed container bounds
+        if (selectionRect.x + newWidthNE > containerRect.width) {
+          selectionRect.width = containerRect.width - selectionRect.x;
+          selectionRect.height = selectionRect.width / initialAspectRatio;
+        } else {
+          selectionRect.width = newWidthNE;
+          selectionRect.height = newHeightNE;
+        }
+        selectionRect.y =
+          selectionRect.y + (selectionRect.height - newHeightNE);
+        break;
+      case "nw":
+        const newHeightNW = Math.max(
+          50,
+          Math.min(
+            selectionRect.height - deltaY,
+            selectionRect.y + selectionRect.height
+          )
+        );
+        const newWidthNW = newHeightNW * initialAspectRatio;
+        // Ensure width doesn't exceed container bounds
+        if (newWidthNW > selectionRect.x + selectionRect.width) {
+          selectionRect.width = selectionRect.x + selectionRect.width;
+          selectionRect.height = selectionRect.width / initialAspectRatio;
+        } else {
+          selectionRect.width = newWidthNW;
+          selectionRect.height = newHeightNW;
+        }
+        selectionRect.x = selectionRect.x + (selectionRect.width - newWidthNW);
+        selectionRect.y =
+          selectionRect.y + (selectionRect.height - newHeightNW);
+        break;
+    }
+
+    updateSelection();
+    startX = e.clientX;
+    startY = e.clientY;
+  }
+
+  function onResizeEnd() {
+    isResizing = false;
+    resizeHandle = null;
+    document.removeEventListener("mousemove", onResizeMove);
+    document.removeEventListener("mouseup", onResizeEnd);
+  }
+
+  // Selection dragging
+  selection.addEventListener("mousedown", (e) => {
+    if (e.target.classList.contains("wb-crop-handle")) return;
+    e.preventDefault();
+    isDragging = true;
+    startX = e.clientX - selectionRect.x;
+    startY = e.clientY - selectionRect.y;
+
+    document.addEventListener("mousemove", onSelectionMove);
+    document.addEventListener("mouseup", onSelectionEnd);
+  });
+
+  function onSelectionMove(e) {
+    if (!isDragging) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const newX = e.clientX - startX;
+    const newY = e.clientY - startY;
+
+    // Constrain selection within image bounds
+    selectionRect.x = Math.max(
+      0,
+      Math.min(newX, containerRect.width - selectionRect.width)
+    );
+    selectionRect.y = Math.max(
+      0,
+      Math.min(newY, containerRect.height - selectionRect.height)
+    );
+
+    updateSelection();
+  }
+
+  function onSelectionEnd() {
+    isDragging = false;
+    document.removeEventListener("mousemove", onSelectionMove);
+    document.removeEventListener("mouseup", onSelectionEnd);
+  }
+
+  // Initialize
+  updateSelection();
+  createHandles();
+
+  // Event listeners
+  cropBtn.addEventListener("click", async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    try {
+      console.log("Crop button clicked, starting crop process...");
+      await performCrop(node, item, cropImg, selectionRect);
+      console.log("Crop completed successfully");
+      document.body.removeChild(overlay);
+      document.body.classList.remove("wb-crop-overlay-active");
+    } catch (error) {
+      console.error("Error during crop:", error);
+      alert("Error cropping image: " + error.message);
+    }
+  });
+
+  cancelBtn.addEventListener("click", () => {
+    document.body.removeChild(overlay);
+    document.body.classList.remove("wb-crop-overlay-active");
+  });
+
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) {
+      document.body.removeChild(overlay);
+      document.body.classList.remove("wb-crop-overlay-active");
+    }
+  });
+}
+
+async function performCrop(node, item, cropImg, selectionRect) {
+  console.log("performCrop called with:", { item: item.id, selectionRect });
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+
+  // Set canvas size to crop dimensions
+  canvas.width = selectionRect.width;
+  canvas.height = selectionRect.height;
+  console.log("Canvas size:", canvas.width, "x", canvas.height);
+
+  // Calculate scale factors
+  const imgRect = cropImg.getBoundingClientRect();
+  const scaleX = cropImg.naturalWidth / imgRect.width;
+  const scaleY = cropImg.naturalHeight / imgRect.height;
+  console.log("Scale factors:", { scaleX, scaleY });
+  console.log("Image dimensions:", {
+    naturalWidth: cropImg.naturalWidth,
+    naturalHeight: cropImg.naturalHeight,
+    displayWidth: imgRect.width,
+    displayHeight: imgRect.height,
+  });
+
+  // Calculate source coordinates
+  const sourceX = selectionRect.x * scaleX;
+  const sourceY = selectionRect.y * scaleY;
+  const sourceWidth = selectionRect.width * scaleX;
+  const sourceHeight = selectionRect.height * scaleY;
+  console.log("Source coordinates:", {
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+  });
+
+  // Try to draw the image, with fallback for CORS issues
+  let croppedDataUrl;
+  try {
+    ctx.drawImage(
+      cropImg,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+    console.log("Image drawn to canvas");
+    croppedDataUrl = canvas.toDataURL("image/png");
+  } catch (error) {
+    console.error("Canvas drawImage failed:", error);
+
+    // Fallback: try to convert the original image to data URL first
+    try {
+      console.log("Trying fallback method...");
+      const originalImg = node.querySelector("img");
+      if (originalImg && originalImg.src.startsWith("data:")) {
+        // If it's already a data URL, we can use it directly
+        const tempCanvas = document.createElement("canvas");
+        const tempCtx = tempCanvas.getContext("2d");
+        const tempImg = new Image();
+
+        await new Promise((resolve, reject) => {
+          tempImg.onload = resolve;
+          tempImg.onerror = reject;
+          tempImg.src = originalImg.src;
+        });
+
+        tempCanvas.width = tempImg.naturalWidth;
+        tempCanvas.height = tempImg.naturalHeight;
+        tempCtx.drawImage(tempImg, 0, 0);
+
+        // Now crop from the temp canvas
+        ctx.drawImage(
+          tempCanvas,
+          sourceX,
+          sourceY,
+          sourceWidth,
+          sourceHeight,
+          0,
+          0,
+          canvas.width,
+          canvas.height
+        );
+        croppedDataUrl = canvas.toDataURL("image/png");
+        console.log("Fallback method succeeded");
+      } else {
+        throw new Error(
+          "Cannot crop this image due to security restrictions. Try uploading the image directly instead of using a URL."
+        );
+      }
+    } catch (fallbackError) {
+      console.error("Fallback method also failed:", fallbackError);
+      throw new Error(
+        "Cannot crop this image due to security restrictions. Try uploading the image directly instead of using a URL."
+      );
+    }
+  }
+
+  console.log("Data URL created, length:", croppedDataUrl.length);
+
+  // Update item with cropped image
+  const items = await readItems();
+  const idx = items.findIndex((i) => i.id === item.id);
+  console.log("Found item at index:", idx);
+
+  if (idx !== -1) {
+    items[idx].src = croppedDataUrl;
+    await writeItems(items);
+    console.log("Items updated in storage");
+    await render();
+    console.log("Whiteboard re-rendered");
+  } else {
+    console.error("Item not found in storage");
+  }
 }
 
 // Initial render and subscribe to storage changes from background
