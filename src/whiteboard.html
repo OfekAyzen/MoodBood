@@ -10,6 +10,13 @@
     <header class="wb-header">
       <h1>MoodBood</h1>
       <div class="wb-controls">
+        <div class="wb-zoom-controls">
+          <button id="zoomOutBtn" class="wb-zoom-btn" title="Zoom Out">
+            −
+          </button>
+          <span id="zoomLevel" class="wb-zoom-level">100%</span>
+          <button id="zoomInBtn" class="wb-zoom-btn" title="Zoom In">+</button>
+        </div>
         <input
           id="imageUrl"
           type="url"
@@ -21,6 +28,10 @@
           <span>Upload Media</span>
         </label>
         <button id="clearBtn" title="Clear all items">Clear</button>
+        <label class="wb-toggle">
+          <input id="snapToggle" type="checkbox" />
+          <span>Snap to grid</span>
+        </label>
         <span class="hint">Tip: paste image or screenshot (Ctrl+V)</span>
       </div>
     </header>
@@ -29,7 +40,9 @@
       class="wb-board"
       tabindex="0"
       aria-label="Whiteboard canvas"
-    ></main>
+    >
+      <div id="boardContent" class="wb-board-content"></div>
+    </main>
 
     <template id="item-tpl">
       <div class="wb-item" draggable="true">

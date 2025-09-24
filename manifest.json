@@ -6,7 +6,7 @@
   "browser_action": {
     "default_title": "Open Whiteboard"
   },
-  "permissions": ["storage", "tabs", "activeTab", "contextMenus"],
+  "permissions": ["storage", "tabs", "activeTab", "contextMenus", "<all_urls>"],
   "background": {
     "scripts": ["src/background.js"],
     "persistent": true

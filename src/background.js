@@ -145,6 +145,135 @@ API.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
+// Proxy function to fetch images and convert to data URL (bypasses CORS)
+async function proxyImageToDataUrl(imageUrl) {
+  try {
+    console.log("Proxying image:", imageUrl);
+
+    // Add headers to mimic a browser request
+    const headers = {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+      Accept: "image/webp,image/apng,image/*,*/*;q=0.8",
+      "Accept-Language": "en-US,en;q=0.9",
+      "Cache-Control": "no-cache",
+      Pragma: "no-cache",
+    };
+
+    // Fetch the image with headers
+    console.log("Fetching image with headers...");
+    const response = await fetch(imageUrl, {
+      method: "GET",
+      headers: headers,
+      mode: "cors",
+    });
+
+    console.log("Response status:", response.status, response.statusText);
+    console.log(
+      "Response headers:",
+      Object.fromEntries(response.headers.entries())
+    );
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    // Check content type
+    const contentType = response.headers.get("content-type");
+    console.log("Content type:", contentType);
+
+    if (!contentType || !contentType.startsWith("image/")) {
+      throw new Error(`Invalid content type: ${contentType}. Expected image/*`);
+    }
+
+    // Convert to blob
+    console.log("Converting to blob...");
+    const blob = await response.blob();
+    console.log("Blob size:", blob.size, "bytes");
+    console.log("Blob type:", blob.type);
+
+    if (blob.size === 0) {
+      throw new Error("Received empty image");
+    }
+
+    // Check if blob is too large (limit to 10MB)
+    if (blob.size > 10 * 1024 * 1024) {
+      throw new Error(
+        `Image too large: ${Math.round(
+          blob.size / 1024 / 1024
+        )}MB. Maximum allowed: 10MB`
+      );
+    }
+
+    // Convert blob to data URL
+    console.log("Converting blob to data URL...");
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        console.log("Data URL created, length:", reader.result.length);
+        resolve(reader.result);
+      };
+      reader.onerror = (error) => {
+        console.error("FileReader error:", error);
+        reject(new Error("Failed to convert image to data URL"));
+      };
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.error("Error proxying image:", error);
+    console.error("Error details:", {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    });
+    throw error;
+  }
+}
+
+// Alternative proxy method for problematic URLs
+async function proxyImageToDataUrlFallback(imageUrl) {
+  try {
+    console.log("Trying fallback proxy method for:", imageUrl);
+
+    // Try without CORS mode first
+    const response = await fetch(imageUrl, {
+      method: "GET",
+      mode: "no-cors",
+    });
+
+    console.log("Fallback response status:", response.status);
+
+    // For no-cors mode, we can't read the response body directly
+    // So we'll create a new request with different headers
+    const fallbackResponse = await fetch(imageUrl, {
+      method: "GET",
+      headers: {
+        Accept: "*/*",
+        "User-Agent": "Mozilla/5.0 (compatible; Extension/1.0)",
+      },
+    });
+
+    if (!fallbackResponse.ok) {
+      throw new Error(
+        `Fallback failed: ${fallbackResponse.status} ${fallbackResponse.statusText}`
+      );
+    }
+
+    const blob = await fallbackResponse.blob();
+    console.log("Fallback blob size:", blob.size);
+
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("Fallback conversion failed"));
+      reader.readAsDataURL(blob);
+    });
+  } catch (error) {
+    console.error("Fallback proxy failed:", error);
+    throw error;
+  }
+}
+
 // Handle messages from content script
 API.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   try {
@@ -152,6 +281,26 @@ API.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
       await addImageItem(message.src);
       await openOrFocusWhiteboard();
       sendResponse({ success: true });
+    } else if (message.action === "proxyImageToDataUrl") {
+      try {
+        const dataUrl = await proxyImageToDataUrl(message.imageUrl);
+        sendResponse({ success: true, dataUrl });
+      } catch (primaryError) {
+        console.log("Primary proxy failed, trying fallback...");
+        try {
+          const dataUrl = await proxyImageToDataUrlFallback(message.imageUrl);
+          sendResponse({ success: true, dataUrl });
+        } catch (fallbackError) {
+          console.error("Both proxy methods failed:", {
+            primaryError,
+            fallbackError,
+          });
+          sendResponse({
+            success: false,
+            error: `Proxy failed: ${primaryError.message}. Fallback also failed: ${fallbackError.message}`,
+          });
+        }
+      }
     }
   } catch (err) {
     console.error("Message handling error:", err);

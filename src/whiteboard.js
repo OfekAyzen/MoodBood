@@ -3,10 +3,339 @@
 
 const API = typeof browser !== "undefined" ? browser : chrome;
 const BOARD = document.getElementById("board");
+const BOARD_CONTENT = document.getElementById("boardContent");
 const URL_INPUT = document.getElementById("imageUrl");
 const ADD_URL_BTN = document.getElementById("addUrlBtn");
 const FILE_INPUT = document.getElementById("fileInput");
 const CLEAR_BTN = document.getElementById("clearBtn");
+const ZOOM_IN_BTN = document.getElementById("zoomInBtn");
+const ZOOM_OUT_BTN = document.getElementById("zoomOutBtn");
+const ZOOM_LEVEL = document.getElementById("zoomLevel");
+const SNAP_TOGGLE = document.getElementById("snapToggle");
+
+// Zoom and pan state
+let scale = 1;
+let tx = 0,
+  ty = 0; // translate in CSS pixels
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 5;
+const ZOOM_STEP = 0.01;
+
+// Grid snapping
+const GRID_SIZE = 24; // matches CSS background-size
+// Suggestion snap when snap-to-grid is OFF
+const SUGGEST_SNAP_RANGE = 5; // px distance within which we hard-snap to suggestion
+const SUGGEST_SHOW_RANGE = 12; // px window to show equal-spacing guide/labels
+const DIST_INSET = 6; // px shorten distance lines from each end
+
+// Track current equal-spacing snap targets (left/top) while dragging
+let currentEqualTargetX = null;
+let currentEqualTargetY = null;
+function snapToGrid(n) {
+  return Math.round(n / GRID_SIZE) * GRID_SIZE;
+}
+let snapToGridEnabled = true;
+
+// Initialize snap toggle from storage and wire events
+(async function initSnapSetting() {
+  try {
+    const { snapToGrid } = await API.storage.local.get({ snapToGrid: true });
+    snapToGridEnabled = !!snapToGrid;
+  } catch {}
+  if (SNAP_TOGGLE) {
+    SNAP_TOGGLE.checked = snapToGridEnabled;
+    SNAP_TOGGLE.addEventListener("change", async (e) => {
+      snapToGridEnabled = /** @type {HTMLInputElement} */ (e.target).checked;
+      try {
+        await API.storage.local.set({ snapToGrid: snapToGridEnabled });
+      } catch {}
+    });
+  }
+})();
+
+// Alignment guides layer
+const guidesLayer = document.createElement("div");
+guidesLayer.className = "wb-guides";
+const guideV1 = document.createElement("div");
+guideV1.className = "wb-guide-vert";
+const guideV2 = document.createElement("div");
+guideV2.className = "wb-guide-vert";
+const guideH1 = document.createElement("div");
+guideH1.className = "wb-guide-horz";
+const guideH2 = document.createElement("div");
+guideH2.className = "wb-guide-horz";
+// Item-to-item guides (green)
+const guideVItem = document.createElement("div");
+guideVItem.className = "wb-guide-vert item";
+const guideHItem = document.createElement("div");
+guideHItem.className = "wb-guide-horz item";
+// Distance overlays
+const distH = document.createElement("div");
+distH.className = "wb-distance-horz";
+distH.innerHTML =
+  '<div class="wb-distance-line"></div><div class="wb-distance-label"></div>';
+const distV = document.createElement("div");
+distV.className = "wb-distance-vert";
+distV.innerHTML =
+  '<div class="wb-distance-line"></div><div class="wb-distance-label"></div>';
+guidesLayer.appendChild(guideV1);
+guidesLayer.appendChild(guideV2);
+guidesLayer.appendChild(guideH1);
+guidesLayer.appendChild(guideH2);
+guidesLayer.appendChild(guideVItem);
+guidesLayer.appendChild(guideHItem);
+guidesLayer.appendChild(distH);
+guidesLayer.appendChild(distV);
+if (BOARD_CONTENT) BOARD_CONTENT.appendChild(guidesLayer);
+
+function hideGridGuides() {
+  [guideV1, guideV2, guideH1, guideH2].forEach(
+    (el) => (el.style.display = "none")
+  );
+  guideVItem.style.display = "none";
+  guideHItem.style.display = "none";
+  distH.style.display = "none";
+  distV.style.display = "none";
+  currentEqualTargetX = null;
+  currentEqualTargetY = null;
+}
+
+function showGridGuidesForRect(left, top, width, height) {
+  if (snapToGridEnabled) {
+    hideGridGuides();
+    return;
+  }
+  // Hide blue grid guides; we only show green item guides
+  [guideV1, guideV2, guideH1, guideH2].forEach(
+    (el) => (el.style.display = "none")
+  );
+
+  // Item-to-item alignment: find nearby other items and show green guides when within half-cell
+  const others = Array.from(BOARD_CONTENT.querySelectorAll(".wb-item")).filter(
+    (el) => !el.classList.contains("wb-dragging")
+  );
+  let snapX = null;
+  let snapY = null;
+  const cx = left + width / 2;
+  const cy = top + height / 2;
+  for (const other of others) {
+    const ol = other.offsetLeft;
+    const ot = other.offsetTop;
+    const ow = other.offsetWidth;
+    const oh = other.offsetHeight;
+    const otherCenters = { cx: ol + ow / 2, cy: ot + oh / 2 };
+
+    // X targets: other left/center/right
+    const xTargets = [ol, otherCenters.cx, ol + ow];
+    for (const xt of xTargets) {
+      if (Math.abs(cx - xt) <= GRID_SIZE / 2) snapX = xt;
+      if (Math.abs(left - xt) <= GRID_SIZE / 2) snapX = xt;
+      if (Math.abs(left + width - xt) <= GRID_SIZE / 2) snapX = xt;
+    }
+
+    // Y targets: other top/center/bottom
+    const yTargets = [ot, otherCenters.cy, ot + oh];
+    for (const yt of yTargets) {
+      if (Math.abs(cy - yt) <= GRID_SIZE / 2) snapY = yt;
+      if (Math.abs(top - yt) <= GRID_SIZE / 2) snapY = yt;
+      if (Math.abs(top + height - yt) <= GRID_SIZE / 2) snapY = yt;
+    }
+  }
+  // Equal-spacing suggestions: A-B gap = g → suggest B-C gap = g (right) and C-A gap = g (left)
+  let spacingX = null;
+  let spacingY = null;
+  let spacingXPair = null; // {A,B,gap,dir}
+  let spacingYPair = null; // {A,B,gap,dir}
+  if (others.length >= 2) {
+    const sortedX = [...others].sort((a, b) => a.offsetLeft - b.offsetLeft);
+    let bestDX = Infinity;
+    for (let i = 0; i < sortedX.length - 1; i++) {
+      const A = sortedX[i];
+      const B = sortedX[i + 1];
+      const Ax = A.offsetLeft,
+        Aw = A.offsetWidth;
+      const Bx = B.offsetLeft,
+        Bw = B.offsetWidth;
+      const gapAB = Bx - (Ax + Aw);
+      if (gapAB > 0) {
+        // Suggest after B with same gap
+        const targetRight = Bx + Bw + gapAB; // C.left
+        const dRight = Math.abs(left - targetRight);
+        if (dRight <= SUGGEST_SHOW_RANGE && dRight < bestDX) {
+          bestDX = dRight;
+          spacingX = targetRight;
+          spacingXPair = { A, B, gap: gapAB, dir: "right" };
+        }
+        // Suggest before A with same gap
+        const targetLeftPos = Ax - gapAB - width; // C.left
+        const dLeft = Math.abs(left - targetLeftPos);
+        if (dLeft <= SUGGEST_SHOW_RANGE && dLeft < bestDX) {
+          bestDX = dLeft;
+          spacingX = targetLeftPos;
+          spacingXPair = { A, B, gap: gapAB, dir: "left" };
+        }
+      }
+    }
+    const sortedY = [...others].sort((a, b) => a.offsetTop - b.offsetTop);
+    let bestDY = Infinity;
+    for (let i = 0; i < sortedY.length - 1; i++) {
+      const A = sortedY[i];
+      const B = sortedY[i + 1];
+      const Ay = A.offsetTop,
+        Ah = A.offsetHeight;
+      const By = B.offsetTop,
+        Bh = B.offsetHeight;
+      const gapABY = By - (Ay + Ah);
+      if (gapABY > 0) {
+        const targetBelow = By + Bh + gapABY; // C.top
+        const dBelow = Math.abs(top - targetBelow);
+        if (dBelow <= SUGGEST_SHOW_RANGE && dBelow < bestDY) {
+          bestDY = dBelow;
+          spacingY = targetBelow;
+          spacingYPair = { A, B, gap: gapABY, dir: "below" };
+        }
+        const targetAbove = Ay - gapABY - height; // C.top
+        const dAbove = Math.abs(top - targetAbove);
+        if (dAbove <= SUGGEST_SHOW_RANGE && dAbove < bestDY) {
+          bestDY = dAbove;
+          spacingY = targetAbove;
+          spacingYPair = { A, B, gap: gapABY, dir: "above" };
+        }
+      }
+    }
+  }
+
+  const guideX = spacingX != null ? spacingX : snapX;
+  if (guideX != null) {
+    // Hide snap-to line if we are showing distance suggestion (spacingX)
+    if (spacingX != null) {
+      guideVItem.style.display = "none";
+      currentEqualTargetX = guideX;
+    } else {
+      guideVItem.style.left = Math.round(guideX) + "px";
+      guideVItem.style.display = "block";
+      currentEqualTargetX = null;
+    }
+    // Show horizontal distance line for equal spacing (both directions)
+    if (spacingXPair) {
+      const Ax = spacingXPair.A.offsetLeft,
+        Aw = spacingXPair.A.offsetWidth;
+      const Bx = spacingXPair.B.offsetLeft,
+        Bw = spacingXPair.B.offsetWidth;
+      const midY = Math.round(top + height / 2);
+      let startX, endX;
+      if (spacingXPair.dir === "right") {
+        startX = Bx + Bw; // B.right
+        endX = guideX; // C.left
+      } else {
+        startX = guideX + width; // C.right
+        endX = Ax; // A.left
+      }
+      const minX = Math.min(startX, endX) + DIST_INSET;
+      const maxX = Math.max(startX, endX) - DIST_INSET;
+      distH.style.left = minX + "px";
+      distH.style.top = midY - 4 + "px";
+      distH.style.width = Math.max(0, maxX - minX) + "px";
+      distH.style.height = "16px";
+      distH.style.display = "block";
+    }
+  } else {
+    guideVItem.style.display = "none";
+    distH.style.display = "none";
+  }
+  const guideY = spacingY != null ? spacingY : snapY;
+  if (guideY != null) {
+    if (spacingY != null) {
+      guideHItem.style.display = "none";
+      currentEqualTargetY = guideY;
+    } else {
+      guideHItem.style.top = Math.round(guideY) + "px";
+      guideHItem.style.display = "block";
+      currentEqualTargetY = null;
+    }
+    if (spacingYPair) {
+      const Ay = spacingYPair.A.offsetTop,
+        Ah = spacingYPair.A.offsetHeight;
+      const By = spacingYPair.B.offsetTop,
+        Bh = spacingYPair.B.offsetHeight;
+      const midX = Math.round(left + width / 2);
+      let startY, endY;
+      if (spacingYPair.dir === "below") {
+        startY = By + Bh; // B.bottom
+        endY = guideY; // C.top
+      } else {
+        startY = guideY + height; // C.bottom
+        endY = Ay; // A.top
+      }
+      const minY = Math.min(startY, endY) + DIST_INSET;
+      const maxY = Math.max(startY, endY) - DIST_INSET;
+      distV.style.left = midX - 1 + "px";
+      distV.style.top = minY + "px";
+      distV.style.height = Math.max(0, maxY - minY) + "px";
+      distV.style.width = "16px";
+      distV.style.display = "block";
+    }
+  } else {
+    guideHItem.style.display = "none";
+    distV.style.display = "none";
+  }
+}
+
+// Hard snap to current suggestion lines within a small range
+function applySuggestSnap(x, y, w, h) {
+  // Read current guide positions (if visible)
+  const vLine =
+    guideVItem && guideVItem.style.display === "block"
+      ? parseFloat(guideVItem.style.left)
+      : null;
+  const hLine =
+    guideHItem && guideHItem.style.display === "block"
+      ? parseFloat(guideHItem.style.top)
+      : null;
+
+  let ax = x;
+  let ay = y;
+
+  // Vertical snap: snap left, right, or center to the vLine if within range
+  if (vLine != null && !Number.isNaN(vLine)) {
+    const targetsX = [x, x + w, x + w / 2];
+    const deltasX = targetsX.map((t) => Math.abs(t - vLine));
+    const minIdx = deltasX.indexOf(Math.min(...deltasX));
+    const nearestTargetX = targetsX[minIdx];
+    const d = vLine - nearestTargetX;
+    if (Math.abs(d) <= SUGGEST_SNAP_RANGE) {
+      if (minIdx === 0) ax = vLine; // left edge to line
+      else if (minIdx === 1) ax = vLine - w; // right edge to line
+      else ax = vLine - w / 2; // center to line
+    }
+  }
+
+  // Horizontal snap: snap top, bottom, or center to the hLine if within range
+  if (hLine != null && !Number.isNaN(hLine)) {
+    const targetsY = [y, y + h, y + h / 2];
+    const deltasY = targetsY.map((t) => Math.abs(t - hLine));
+    const minIdxY = deltasY.indexOf(Math.min(...deltasY));
+    const dY = hLine - targetsY[minIdxY];
+    if (Math.abs(dY) <= SUGGEST_SNAP_RANGE) {
+      if (minIdxY === 0) ay = hLine; // top
+      else if (minIdxY === 1) ay = hLine - h; // bottom
+      else ay = hLine - h / 2; // center
+    }
+  }
+
+  return { x: ax, y: ay };
+}
+
+// Panning state
+let isPanning = false;
+let panStartX = 0;
+let panStartY = 0;
+
+// Flag to prevent re-rendering during drag operations
+let isDraggingItem = false;
+
+// Click-to-front functionality
+let zIndexCounter = 10; // Start reasonable; we'll keep increasing on clicks
 
 /** @typedef {{ id:string, type:'image'|'video'|'youtube'|'link', x:number, y:number, z:number, w:number, h:number, src?:string, url?:string, title?:string }} Item */
 
@@ -26,7 +355,7 @@ function createItemElement(item) {
   const node = tpl.content.firstElementChild.cloneNode(true);
   node.style.left = item.x + "px";
   node.style.top = item.y + "px";
-  node.style.zIndex = String(item.z || 1);
+  node.style.zIndex = String(item.z || ++zIndexCounter);
   node.style.width = (item.w || 200) + "px";
   node.style.height = item.h || "auto";
   node.dataset.id = item.id;
@@ -125,7 +454,12 @@ function enableDrag(node, item) {
     dragging = false;
 
   function onMouseDown(ev) {
-    if (ev.button !== 0) return;
+    console.log("onMouseDown triggered on:", ev.target, "for item:", item.id);
+
+    if (ev.button !== 0) {
+      console.log("Not left button, ignoring");
+      return;
+    }
 
     // Don't start drag if clicking on buttons or resize handles
     if (
@@ -135,6 +469,7 @@ function enableDrag(node, item) {
       ev.target.closest(".wb-close") ||
       ev.target.closest(".wb-crop")
     ) {
+      console.log("Click on button/handle, ignoring");
       return;
     }
 
@@ -143,16 +478,19 @@ function enableDrag(node, item) {
       (item.type === "youtube" || item.type === "video") &&
       !ev.target.closest(".wb-video-header")
     ) {
+      console.log("Video item not clicked on header, ignoring");
       return; // Don't start drag if not clicking on header
     }
+
+    // Always bring to front on mousedown (whether it becomes a drag or click)
+    console.log("MouseDown on item, calling bringToFront:", node);
+    bringToFront(node);
 
     ev.preventDefault();
     ev.stopPropagation();
 
     dragging = true;
-    // Bring to front
-    item.z = Date.now();
-    node.style.zIndex = String(item.z);
+    isDraggingItem = true;
     offsetX = ev.clientX - node.offsetLeft;
     offsetY = ev.clientY - node.offsetTop;
 
@@ -172,15 +510,23 @@ function enableDrag(node, item) {
     document.removeEventListener("mousemove", onMouseMove);
     document.removeEventListener("mouseup", onMouseUp);
 
-    // Persist final position
+    // Persist final position without triggering re-render
     const items = await readItems();
     const idx = items.findIndex((i) => i.id === item.id);
     if (idx !== -1) {
       items[idx].x = parseInt(node.style.left, 10) || 0;
       items[idx].y = parseInt(node.style.top, 10) || 0;
       items[idx].z = item.z;
-      await writeItems(items);
+      // Update storage directly without using writeItems to avoid triggering listener
+      await API.storage.local.set({ whiteboardItems: items });
     }
+
+    // Clear the flag after a small delay to allow storage update to complete
+    setTimeout(() => {
+      isDraggingItem = false;
+    }, 50);
+
+    hideGridGuides();
   }
 
   function onMouseMove(ev) {
@@ -189,8 +535,35 @@ function enableDrag(node, item) {
     ev.preventDefault();
     const x = ev.clientX - offsetX;
     const y = ev.clientY - offsetY;
-    node.style.left = x + "px";
-    node.style.top = y + "px";
+    let nx = snapToGridEnabled ? snapToGrid(x) : x;
+    let ny = snapToGridEnabled ? snapToGrid(y) : y;
+
+    // Hard snap to visible suggestion lines when close (equal-spacing targets)
+    if (!snapToGridEnabled) {
+      const w = node.offsetWidth;
+      const h = node.offsetHeight;
+      // equal-spacing left/top snap
+      if (
+        currentEqualTargetX != null &&
+        Math.abs(nx - currentEqualTargetX) <= SUGGEST_SNAP_RANGE
+      ) {
+        nx = currentEqualTargetX;
+      }
+      if (
+        currentEqualTargetY != null &&
+        Math.abs(ny - currentEqualTargetY) <= SUGGEST_SNAP_RANGE
+      ) {
+        ny = currentEqualTargetY;
+      }
+      // Additionally snap to green alignment guides (left/right/center, top/bottom/center)
+      const snapped = applySuggestSnap(nx, ny, w, h);
+      nx = snapped.x;
+      ny = snapped.y;
+    }
+
+    node.style.left = nx + "px";
+    node.style.top = ny + "px";
+    showGridGuidesForRect(nx, ny, node.offsetWidth, node.offsetHeight);
   }
 
   node.addEventListener("mousedown", onMouseDown);
@@ -274,8 +647,10 @@ function enableResize(node, item) {
     // Apply new dimensions
     node.style.width = newWidth + "px";
     node.style.height = newHeight + "px";
-    node.style.left = newLeft + "px";
-    node.style.top = newTop + "px";
+    const nl = snapToGridEnabled ? snapToGrid(newLeft) : newLeft;
+    const nt = snapToGridEnabled ? snapToGrid(newTop) : newTop;
+    node.style.left = nl + "px";
+    node.style.top = nt + "px";
   }
 
   async function onResizeEnd() {
@@ -301,10 +676,19 @@ function enableResize(node, item) {
 }
 
 async function render() {
-  BOARD.innerHTML = "";
+  // Don't re-render if we're currently dragging an item
+  if (isDraggingItem) {
+    return;
+  }
+
+  BOARD_CONTENT.innerHTML = "";
   const items = await readItems();
   for (const item of items) {
-    BOARD.appendChild(createItemElement(item));
+    BOARD_CONTENT.appendChild(createItemElement(item));
+  }
+  // Re-add guides layer after clearing content
+  if (guidesLayer) {
+    BOARD_CONTENT.appendChild(guidesLayer);
   }
 }
 
@@ -531,9 +915,13 @@ async function addUrl(urlText) {
 function createBase(partial) {
   return {
     id: `wb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    x: Math.floor(80 + Math.random() * 200),
-    y: Math.floor(80 + Math.random() * 140),
-    z: Date.now(),
+    x: snapToGridEnabled
+      ? snapToGrid(Math.floor(80 + Math.random() * 200))
+      : Math.floor(80 + Math.random() * 200),
+    y: snapToGridEnabled
+      ? snapToGrid(Math.floor(80 + Math.random() * 140))
+      : Math.floor(80 + Math.random() * 140),
+    z: ++zIndexCounter, // Use the global counter
     ...partial,
   };
 }
@@ -574,6 +962,20 @@ CLEAR_BTN.addEventListener("click", async () => {
     await API.storage.local.set({ whiteboardItems: [] });
     await render();
   }
+});
+
+// Zoom events
+ZOOM_IN_BTN.addEventListener("click", zoomIn);
+ZOOM_OUT_BTN.addEventListener("click", zoomOut);
+BOARD.addEventListener("wheel", handleWheelZoom, { passive: false });
+
+// Panning events
+BOARD.addEventListener("mousedown", startPan);
+
+// Double-click to reset zoom
+BOARD.addEventListener("dblclick", (e) => {
+  e.preventDefault();
+  resetZoom();
 });
 
 // Paste support (images/screenshots from clipboard)
@@ -643,6 +1045,177 @@ function blobToDataUrl(blob) {
   });
 }
 
+// Bring item to front
+function bringToFront(itemElement) {
+  // Remove the class from others (optional—keeps only one "active")
+  const otherFrontItems = document.querySelectorAll(".wb-item.bring-front");
+  otherFrontItems.forEach((el) => {
+    el.classList.remove("bring-front");
+  });
+
+  itemElement.classList.add("bring-front");
+
+  // Use a very high z-index value to ensure it's on top
+  const newZIndex = ++zIndexCounter;
+  itemElement.style.setProperty("z-index", newZIndex, "important");
+  // Ensure DOM order places this item last within its container
+  if (itemElement.parentNode) {
+    itemElement.parentNode.appendChild(itemElement);
+  }
+
+  // Persist z-order to storage so re-renders keep this on top
+  const id = itemElement.dataset.id;
+  if (id) {
+    readItems().then((items) => {
+      const idx = items.findIndex((i) => i.id === id);
+      if (idx !== -1) {
+        items[idx].z = newZIndex;
+        API.storage.local.set({ whiteboardItems: items });
+      }
+    });
+  }
+
+  // Force a style recalculation
+  itemElement.offsetHeight;
+}
+
+// Apply transform to the board content
+function applyTransform() {
+  BOARD_CONTENT.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+  ZOOM_LEVEL.textContent = Math.round(scale * 100) + "%";
+
+  // Update board class for styling
+  if (scale !== 1) {
+    BOARD.classList.add("zoomed");
+  } else {
+    BOARD.classList.remove("zoomed");
+  }
+}
+
+// Convert client coordinates to local content coordinates
+function clientToLocal(x, y) {
+  const r = BOARD.getBoundingClientRect();
+  const sx = x - r.left; // screen x within viewport
+  const sy = y - r.top; // screen y within viewport
+  // convert to content local (pre-transform) coords
+  return { x: (sx - tx) / scale, y: (sy - ty) / scale };
+}
+
+// Zoom functions
+function zoomIn() {
+  const newScale = Math.min(MAX_ZOOM, scale + ZOOM_STEP);
+  scale = newScale;
+  applyTransform();
+}
+
+function zoomOut() {
+  const newScale = Math.max(MIN_ZOOM, scale - ZOOM_STEP);
+  scale = newScale;
+  applyTransform();
+}
+
+function resetZoom() {
+  scale = 1;
+  tx = 0;
+  ty = 0;
+  applyTransform();
+}
+
+// Handle mouse wheel zoom
+function handleWheelZoom(e) {
+  e.preventDefault();
+
+  const local = clientToLocal(e.clientX, e.clientY);
+
+  const zoom = Math.exp(-e.deltaY * 0.001);
+  const newScale = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, scale * zoom));
+
+  // Keep the same local point under the cursor: solve for new translate
+  const r = BOARD.getBoundingClientRect();
+  const cursorX = e.clientX - r.left;
+  const cursorY = e.clientY - r.top;
+
+  tx = cursorX - local.x * newScale;
+  ty = cursorY - local.y * newScale;
+  scale = newScale;
+
+  applyTransform();
+}
+
+// Panning functionality
+function startPan(e) {
+  // Only start panning if not clicking on an item
+  if (e.target.closest(".wb-item")) return;
+
+  isPanning = true;
+  panStartX = e.clientX;
+  panStartY = e.clientY;
+  BOARD.style.cursor = "grabbing";
+
+  document.addEventListener("mousemove", handlePan);
+  document.addEventListener("mouseup", endPan);
+}
+
+function handlePan(e) {
+  if (!isPanning) return;
+
+  e.preventDefault();
+
+  tx += e.clientX - panStartX;
+  ty += e.clientY - panStartY;
+  panStartX = e.clientX;
+  panStartY = e.clientY;
+
+  applyTransform();
+}
+
+function endPan() {
+  isPanning = false;
+  BOARD.style.cursor = "grab";
+
+  document.removeEventListener("mousemove", handlePan);
+  document.removeEventListener("mouseup", endPan);
+}
+
+// Show success feedback for crop operation
+function showCropSuccessFeedback() {
+  const feedback = document.createElement("div");
+  feedback.style.cssText = `
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: #10b981;
+    color: white;
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    z-index: 999999;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    animation: slideIn 0.3s ease;
+  `;
+  feedback.textContent = "Image cropped successfully!";
+
+  // Add animation styles
+  const style = document.createElement("style");
+  style.textContent = `
+    @keyframes slideIn {
+      from { transform: translateX(100%); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+  `;
+  document.head.appendChild(style);
+
+  document.body.appendChild(feedback);
+
+  // Remove after 3 seconds
+  setTimeout(() => {
+    feedback.remove();
+    style.remove();
+  }, 3000);
+}
+
 // Cropping functionality
 function startCrop(node, item) {
   const img = node.querySelector("img");
@@ -687,8 +1260,17 @@ function startCrop(node, item) {
 
   container.appendChild(cropImg);
   container.appendChild(selection);
-  container.appendChild(controls);
   overlay.appendChild(container);
+  overlay.appendChild(controls);
+
+  // Prevent container and controls clicks from closing the overlay
+  container.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+
+  controls.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
 
   document.body.appendChild(overlay);
   document.body.classList.add("wb-crop-overlay-active");
@@ -700,7 +1282,6 @@ function startCrop(node, item) {
   let startX = 0,
     startY = 0;
   let selectionRect = { x: 50, y: 50, width: 200, height: 150 };
-  let initialAspectRatio = selectionRect.width / selectionRect.height;
 
   function updateSelection() {
     selection.style.left = selectionRect.x + "px";
@@ -727,9 +1308,6 @@ function startCrop(node, item) {
     startX = e.clientX;
     startY = e.clientY;
 
-    // Store initial aspect ratio
-    initialAspectRatio = selectionRect.width / selectionRect.height;
-
     document.addEventListener("mousemove", onResizeMove);
     document.addEventListener("mouseup", onResizeEnd);
   }
@@ -737,12 +1315,15 @@ function startCrop(node, item) {
   function onResizeMove(e) {
     if (!isResizing) return;
 
+    e.preventDefault();
+    e.stopPropagation(); // Prevent event from bubbling to overlay
+
     const deltaX = e.clientX - startX;
     const deltaY = e.clientY - startY;
     const containerRect = container.getBoundingClientRect();
 
     switch (resizeHandle) {
-      case "se":
+      case "se": // southeast - bottom right
         selectionRect.width = Math.max(
           50,
           Math.min(
@@ -750,33 +1331,34 @@ function startCrop(node, item) {
             containerRect.width - selectionRect.x
           )
         );
-        selectionRect.height = selectionRect.width / initialAspectRatio;
-        // Ensure height doesn't exceed container bounds
-        if (selectionRect.y + selectionRect.height > containerRect.height) {
-          selectionRect.height = containerRect.height - selectionRect.y;
-          selectionRect.width = selectionRect.height * initialAspectRatio;
-        }
+        selectionRect.height = Math.max(
+          50,
+          Math.min(
+            selectionRect.height + deltaY,
+            containerRect.height - selectionRect.y
+          )
+        );
         break;
-      case "sw":
-        const newWidth = Math.max(
+      case "sw": // southwest - bottom left
+        const newWidthSW = Math.max(
           50,
           Math.min(
             selectionRect.width - deltaX,
             selectionRect.x + selectionRect.width
           )
         );
-        const newHeight = newWidth / initialAspectRatio;
-        // Ensure height doesn't exceed container bounds
-        if (selectionRect.y + newHeight > containerRect.height) {
-          selectionRect.height = containerRect.height - selectionRect.y;
-          selectionRect.width = selectionRect.height * initialAspectRatio;
-        } else {
-          selectionRect.width = newWidth;
-          selectionRect.height = newHeight;
-        }
-        selectionRect.x = selectionRect.x + (selectionRect.width - newWidth);
+        const newHeightSW = Math.max(
+          50,
+          Math.min(
+            selectionRect.height + deltaY,
+            containerRect.height - selectionRect.y
+          )
+        );
+        selectionRect.x = selectionRect.x + (selectionRect.width - newWidthSW);
+        selectionRect.width = newWidthSW;
+        selectionRect.height = newHeightSW;
         break;
-      case "ne":
+      case "ne": // northeast - top right
         const newHeightNE = Math.max(
           50,
           Math.min(
@@ -784,19 +1366,19 @@ function startCrop(node, item) {
             selectionRect.y + selectionRect.height
           )
         );
-        const newWidthNE = newHeightNE * initialAspectRatio;
-        // Ensure width doesn't exceed container bounds
-        if (selectionRect.x + newWidthNE > containerRect.width) {
-          selectionRect.width = containerRect.width - selectionRect.x;
-          selectionRect.height = selectionRect.width / initialAspectRatio;
-        } else {
-          selectionRect.width = newWidthNE;
-          selectionRect.height = newHeightNE;
-        }
+        const newWidthNE = Math.max(
+          50,
+          Math.min(
+            selectionRect.width + deltaX,
+            containerRect.width - selectionRect.x
+          )
+        );
         selectionRect.y =
           selectionRect.y + (selectionRect.height - newHeightNE);
+        selectionRect.width = newWidthNE;
+        selectionRect.height = newHeightNE;
         break;
-      case "nw":
+      case "nw": // northwest - top left
         const newHeightNW = Math.max(
           50,
           Math.min(
@@ -804,18 +1386,18 @@ function startCrop(node, item) {
             selectionRect.y + selectionRect.height
           )
         );
-        const newWidthNW = newHeightNW * initialAspectRatio;
-        // Ensure width doesn't exceed container bounds
-        if (newWidthNW > selectionRect.x + selectionRect.width) {
-          selectionRect.width = selectionRect.x + selectionRect.width;
-          selectionRect.height = selectionRect.width / initialAspectRatio;
-        } else {
-          selectionRect.width = newWidthNW;
-          selectionRect.height = newHeightNW;
-        }
+        const newWidthNW = Math.max(
+          50,
+          Math.min(
+            selectionRect.width - deltaX,
+            selectionRect.x + selectionRect.width
+          )
+        );
         selectionRect.x = selectionRect.x + (selectionRect.width - newWidthNW);
         selectionRect.y =
           selectionRect.y + (selectionRect.height - newHeightNW);
+        selectionRect.width = newWidthNW;
+        selectionRect.height = newHeightNW;
         break;
     }
 
@@ -824,7 +1406,11 @@ function startCrop(node, item) {
     startY = e.clientY;
   }
 
-  function onResizeEnd() {
+  function onResizeEnd(e) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation(); // Prevent event from bubbling to overlay
+    }
     isResizing = false;
     resizeHandle = null;
     document.removeEventListener("mousemove", onResizeMove);
@@ -835,6 +1421,7 @@ function startCrop(node, item) {
   selection.addEventListener("mousedown", (e) => {
     if (e.target.classList.contains("wb-crop-handle")) return;
     e.preventDefault();
+    e.stopPropagation(); // Prevent event from bubbling to overlay
     isDragging = true;
     startX = e.clientX - selectionRect.x;
     startY = e.clientY - selectionRect.y;
@@ -845,6 +1432,9 @@ function startCrop(node, item) {
 
   function onSelectionMove(e) {
     if (!isDragging) return;
+
+    e.preventDefault();
+    e.stopPropagation(); // Prevent event from bubbling to overlay
 
     const containerRect = container.getBoundingClientRect();
     const newX = e.clientX - startX;
@@ -863,7 +1453,11 @@ function startCrop(node, item) {
     updateSelection();
   }
 
-  function onSelectionEnd() {
+  function onSelectionEnd(e) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation(); // Prevent event from bubbling to overlay
+    }
     isDragging = false;
     document.removeEventListener("mousemove", onSelectionMove);
     document.removeEventListener("mouseup", onSelectionEnd);
@@ -877,15 +1471,47 @@ function startCrop(node, item) {
   cropBtn.addEventListener("click", async (e) => {
     e.preventDefault();
     e.stopPropagation();
+
+    // Show loading state
+    const originalText = cropBtn.textContent;
+    cropBtn.textContent = "Cropping...";
+    cropBtn.disabled = true;
+    cropBtn.style.opacity = "0.6";
+
     try {
       console.log("Crop button clicked, starting crop process...");
       await performCrop(node, item, cropImg, selectionRect);
       console.log("Crop completed successfully");
+
+      // Show success feedback
+      showCropSuccessFeedback();
+
       document.body.removeChild(overlay);
       document.body.classList.remove("wb-crop-overlay-active");
     } catch (error) {
       console.error("Error during crop:", error);
-      alert("Error cropping image: " + error.message);
+
+      // Show detailed error message
+      let errorMessage = "Error cropping image: " + error.message;
+
+      // Provide specific guidance based on error type
+      if (
+        error.message.includes("security restrictions") ||
+        error.message.includes("CORS")
+      ) {
+        errorMessage +=
+          "\n\nTip: Try uploading the image directly instead of using a URL, or the image server may not allow cross-origin access.";
+      } else if (error.message.includes("Proxy failed")) {
+        errorMessage +=
+          "\n\nTip: The image may be too large or the server may be blocking requests. Try downloading and uploading the image directly.";
+      }
+
+      alert(errorMessage);
+    } finally {
+      // Restore button state
+      cropBtn.textContent = originalText;
+      cropBtn.disabled = false;
+      cropBtn.style.opacity = "1";
     }
   });
 
@@ -956,14 +1582,49 @@ async function performCrop(node, item, cropImg, selectionRect) {
   } catch (error) {
     console.error("Canvas drawImage failed:", error);
 
-    // Fallback: try to convert the original image to data URL first
+    // Fallback: Use proxy to fetch image as data URL
     try {
-      console.log("Trying fallback method...");
+      console.log("Trying proxy method for external image...");
       const originalImg = node.querySelector("img");
-      if (originalImg && originalImg.src.startsWith("data:")) {
-        // If it's already a data URL, we can use it directly
-        const tempCanvas = document.createElement("canvas");
-        const tempCtx = tempCanvas.getContext("2d");
+
+      if (originalImg && !originalImg.src.startsWith("data:")) {
+        // External URL - use proxy
+        console.log("Using proxy for external image:", originalImg.src);
+        const response = await API.runtime.sendMessage({
+          action: "proxyImageToDataUrl",
+          imageUrl: originalImg.src,
+        });
+
+        if (response.success) {
+          console.log("Proxy succeeded, creating temp image...");
+          const tempImg = new Image();
+
+          await new Promise((resolve, reject) => {
+            tempImg.onload = resolve;
+            tempImg.onerror = reject;
+            tempImg.src = response.dataUrl;
+          });
+
+          // Now crop from the temp image
+          ctx.drawImage(
+            tempImg,
+            sourceX,
+            sourceY,
+            sourceWidth,
+            sourceHeight,
+            0,
+            0,
+            canvas.width,
+            canvas.height
+          );
+          croppedDataUrl = canvas.toDataURL("image/png");
+          console.log("Proxy method succeeded");
+        } else {
+          throw new Error(response.error || "Proxy failed");
+        }
+      } else if (originalImg && originalImg.src.startsWith("data:")) {
+        // Already a data URL
+        console.log("Using existing data URL...");
         const tempImg = new Image();
 
         await new Promise((resolve, reject) => {
@@ -972,13 +1633,8 @@ async function performCrop(node, item, cropImg, selectionRect) {
           tempImg.src = originalImg.src;
         });
 
-        tempCanvas.width = tempImg.naturalWidth;
-        tempCanvas.height = tempImg.naturalHeight;
-        tempCtx.drawImage(tempImg, 0, 0);
-
-        // Now crop from the temp canvas
         ctx.drawImage(
-          tempCanvas,
+          tempImg,
           sourceX,
           sourceY,
           sourceWidth,
@@ -989,16 +1645,14 @@ async function performCrop(node, item, cropImg, selectionRect) {
           canvas.height
         );
         croppedDataUrl = canvas.toDataURL("image/png");
-        console.log("Fallback method succeeded");
+        console.log("Data URL method succeeded");
       } else {
-        throw new Error(
-          "Cannot crop this image due to security restrictions. Try uploading the image directly instead of using a URL."
-        );
+        throw new Error("No valid image source found");
       }
     } catch (fallbackError) {
       console.error("Fallback method also failed:", fallbackError);
       throw new Error(
-        "Cannot crop this image due to security restrictions. Try uploading the image directly instead of using a URL."
+        `Cannot crop this image: ${fallbackError.message}. Try uploading the image directly instead of using a URL.`
       );
     }
   }
@@ -1021,8 +1675,28 @@ async function performCrop(node, item, cropImg, selectionRect) {
   }
 }
 
+// Initialize z-index counter from existing items
+async function initializeZIndexCounter() {
+  const items = await readItems();
+  if (items.length > 0) {
+    // Normalize z values to small sequential ints based on existing order
+    const itemsByZ = [...items].sort((a, b) => (a.z || 0) - (b.z || 0));
+    let nextZ = 10;
+    for (const it of itemsByZ) {
+      it.z = nextZ++;
+    }
+    await API.storage.local.set({ whiteboardItems: items });
+    zIndexCounter = nextZ;
+  }
+}
+
+// (removed) addTestButton - debug helper no longer needed
+
 // Initial render and subscribe to storage changes from background
-render();
+initializeZIndexCounter().then(() => {
+  render();
+  applyTransform(); // Initialize transform
+});
 API.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.whiteboardItems) {
     render();

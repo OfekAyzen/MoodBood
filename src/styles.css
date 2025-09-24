@@ -40,6 +40,41 @@ body {
   gap: 8px;
 }
 
+.wb-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  padding-right: 8px;
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.wb-zoom-btn {
+  background: #0b1220;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: bold;
+  min-width: 32px;
+  transition: all 0.2s ease;
+}
+
+.wb-zoom-btn:hover {
+  background: rgba(96, 165, 250, 0.1);
+  border-color: var(--accent);
+}
+
+.wb-zoom-level {
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 40px;
+  text-align: center;
+  font-weight: 500;
+}
+
 .wb-controls input[type="url"] {
   width: 320px;
   max-width: 45vw;
@@ -72,7 +107,15 @@ body {
 .wb-board {
   position: relative;
   height: calc(100% - 58px);
-  overflow: auto;
+  width: 100%;
+  overflow: hidden;
+  cursor: grab;
+}
+
+.wb-board-content {
+  position: relative;
+  width: 100%;
+  height: 100%;
   background-image: linear-gradient(
       rgba(255, 255, 255, 0.03) 1px,
       transparent 1px
@@ -80,6 +123,77 @@ body {
     linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
   background-size: 24px 24px, 24px 24px;
   background-position: -1px -1px;
+  transform-origin: 0 0;
+  min-width: 5000px;
+  min-height: 5000px;
+}
+
+/* Grid alignment guides (shown while dragging with snap off) */
+.wb-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 2147483647; /* top-most without interfering */
+}
+.wb-guide-vert,
+.wb-guide-horz {
+  position: absolute;
+  background: rgba(96, 165, 250, 0.9);
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.4);
+  display: none;
+}
+.wb-guide-vert.item,
+.wb-guide-horz.item {
+  background: rgba(34, 197, 94, 0.9); /* green for item-to-item */
+  box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.4);
+}
+
+/* Distance indicators for equal spacing */
+.wb-distance-horz,
+.wb-distance-vert {
+  position: absolute;
+  pointer-events: none;
+  display: none;
+  color: #22c55e;
+  font-size: 12px;
+  font-weight: 600;
+}
+.wb-distance-horz .wb-distance-line {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: rgba(59, 130, 246, 0.95);
+  transform: translateY(-50%);
+}
+.wb-distance-vert .wb-distance-line {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: rgba(59, 130, 246, 0.95);
+  transform: translateX(-50%);
+}
+/* No numeric labels for distance */
+.wb-guide-vert {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+}
+.wb-guide-horz {
+  left: 0;
+  right: 0;
+  height: 2px;
+}
+
+.wb-board:active {
+  cursor: grabbing;
+}
+
+.wb-board.zoomed {
+  cursor: grab;
 }
 
 .wb-item {
@@ -303,6 +417,12 @@ body {
   pointer-events: none;
 }
 
+/* Click-to-front styling */
+.wb-item.bring-front {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  outline: 2px solid rgba(0, 0, 0, 0.08);
+}
+
 .wb-dragging * {
   pointer-events: none;
 }
@@ -359,15 +479,17 @@ body {
   max-width: 90vw;
   max-height: 90vh;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-  padding-bottom: 50px;
 }
 
 .wb-crop-image {
   display: block;
   max-width: 100%;
   max-height: 100%;
+  width: auto;
+  height: auto;
   user-select: none;
   pointer-events: none;
+  border-radius: 6px;
 }
 
 .wb-crop-selection {
@@ -409,32 +531,41 @@ body {
 }
 
 .wb-crop-controls {
-  position: absolute;
-  bottom: 10px;
+  position: fixed;
+  bottom: 20px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
+  align-items: center;
   gap: 8px;
   z-index: 1000;
-  background: rgba(0, 0, 0, 0.7);
-  padding: 8px;
-  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.8);
+  padding: 12px 16px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .wb-crop-btn {
   background: var(--accent);
   color: white;
   border: none;
-  border-radius: 4px;
-  padding: 6px 12px;
+  border-radius: 6px;
+  padding: 8px 16px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 14px;
+  font-weight: 500;
   z-index: 10;
   position: relative;
+  transition: all 0.2s ease;
 }
 
 .wb-crop-btn:hover {
   background: #4f9eff;
+  transform: translateY(-1px);
+}
+
+.wb-crop-btn:active {
+  transform: translateY(0);
 }
 
 .wb-crop-btn.cancel {
