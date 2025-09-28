@@ -31,15 +31,16 @@ async function openOrFocusWhiteboard() {
   return created.id;
 }
 
-async function readItems() {
-  const { whiteboardItems } = await API.storage.local.get({
-    whiteboardItems: [],
-  });
-  return Array.isArray(whiteboardItems) ? whiteboardItems : [];
+async function readItems(boardId = "default") {
+  const key = `whiteboardItems_${boardId}`;
+  const obj = await API.storage.local.get({ [key]: [] });
+  const items = obj[key];
+  return Array.isArray(items) ? items : [];
 }
 
-async function writeItems(items) {
-  await API.storage.local.set({ whiteboardItems: items });
+async function writeItems(items, boardId = "default") {
+  const key = `whiteboardItems_${boardId}`;
+  await API.storage.local.set({ [key]: items });
 }
 
 function createItemBase(partial) {
@@ -52,24 +53,24 @@ function createItemBase(partial) {
   };
 }
 
-async function addImageItem(src) {
-  const items = await readItems();
+async function addImageItem(src, boardId = "default") {
+  const items = await readItems(boardId);
   items.push(createItemBase({ type: "image", src, w: 240, h: 180 }));
-  await writeItems(items);
+  await writeItems(items, boardId);
 }
 
-async function addLinkItem(url, title) {
-  const items = await readItems();
+async function addLinkItem(url, title, boardId = "default") {
+  const items = await readItems(boardId);
   items.push(
     createItemBase({ type: "link", url, title: title || url, w: 280, h: 120 })
   );
-  await writeItems(items);
+  await writeItems(items, boardId);
 }
 
-async function addScreenshotItem(dataUrl) {
-  const items = await readItems();
+async function addScreenshotItem(dataUrl, boardId = "default") {
+  const items = await readItems(boardId);
   items.push(createItemBase({ type: "image", src: dataUrl, w: 320, h: 240 }));
-  await writeItems(items);
+  await writeItems(items, boardId);
 }
 
 // Create context menus on install/update
@@ -114,21 +115,37 @@ if (API.action && API.action.onClicked) {
 API.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     if (info.menuItemId === MENU_IDS.ADD_IMAGE && info.srcUrl) {
-      await addImageItem(info.srcUrl);
+      // Use active board from whiteboardBoards meta if present
+      const { whiteboardBoards } = await API.storage.local.get({
+        whiteboardBoards: { active: "default", list: ["default"] },
+      });
+      const boardId =
+        (whiteboardBoards && whiteboardBoards.active) || "default";
+      await addImageItem(info.srcUrl, boardId);
       await openOrFocusWhiteboard();
       return;
     }
     if (info.menuItemId === MENU_IDS.ADD_LINK && info.linkUrl) {
-      await addLinkItem(info.linkUrl, info.selectionText);
+      const { whiteboardBoards } = await API.storage.local.get({
+        whiteboardBoards: { active: "default", list: ["default"] },
+      });
+      const boardId =
+        (whiteboardBoards && whiteboardBoards.active) || "default";
+      await addLinkItem(info.linkUrl, info.selectionText, boardId);
       await openOrFocusWhiteboard();
       return;
     }
     if (info.menuItemId === MENU_IDS.ADD_VIDEO && info.srcUrl) {
-      const items = await readItems();
+      const { whiteboardBoards } = await API.storage.local.get({
+        whiteboardBoards: { active: "default", list: ["default"] },
+      });
+      const boardId =
+        (whiteboardBoards && whiteboardBoards.active) || "default";
+      const items = await readItems(boardId);
       items.push(
         createItemBase({ type: "video", src: info.srcUrl, w: 360, h: 240 })
       );
-      await writeItems(items);
+      await writeItems(items, boardId);
       await openOrFocusWhiteboard();
       return;
     }
@@ -278,7 +295,18 @@ async function proxyImageToDataUrlFallback(imageUrl) {
 API.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
   try {
     if (message.action === "addImageToWhiteboard") {
-      await addImageItem(message.src);
+      const targetBoard = message.boardId || "default";
+      // Ensure target board exists and becomes active
+      const { whiteboardBoards } = await API.storage.local.get({
+        whiteboardBoards: { active: "default", list: ["default"] },
+      });
+      const meta = whiteboardBoards || { active: "default", list: ["default"] };
+      if (!Array.isArray(meta.list)) meta.list = [];
+      if (!meta.list.includes(targetBoard)) meta.list.push(targetBoard);
+      meta.active = targetBoard;
+      await API.storage.local.set({ whiteboardBoards: meta });
+
+      await addImageItem(message.src, targetBoard);
       await openOrFocusWhiteboard();
       sendResponse({ success: true });
     } else if (message.action === "proxyImageToDataUrl") {

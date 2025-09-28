@@ -10,19 +10,11 @@
     <header class="wb-header">
       <h1>MoodBood</h1>
       <div class="wb-controls">
-        <div class="wb-zoom-controls">
-          <button id="zoomOutBtn" class="wb-zoom-btn" title="Zoom Out">
-            −
-          </button>
-          <span id="zoomLevel" class="wb-zoom-level">100%</span>
-          <button id="zoomInBtn" class="wb-zoom-btn" title="Zoom In">+</button>
-        </div>
         <input
           id="imageUrl"
           type="url"
           placeholder="Paste image URL or page URL"
         />
-        <button id="addUrlBtn">Add URL</button>
         <label class="file-btn">
           <input id="fileInput" type="file" accept="image/*,video/*" hidden />
           <span>Upload Media</span>
@@ -31,6 +23,12 @@
         <label class="wb-toggle">
           <input id="snapToggle" type="checkbox" />
           <span>Snap to grid</span>
+        </label>
+        <label class="wb-select">
+          <span>Board:</span>
+          <button id="boardPickerBtn" title="Choose board">Choose Board</button>
+          <button id="newBoardBtn" title="Create board">New</button>
+          <button id="deleteBoardBtn" title="Delete board">Delete</button>
         </label>
         <label class="wb-select">
           <span>Grid:</span>

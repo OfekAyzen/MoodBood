@@ -70,8 +70,10 @@ function showHoverIcon(img, event) {
   icon.addEventListener("click", (e) => {
     e.preventDefault();
     e.stopPropagation();
-    addImageToWhiteboard(img.src, img.alt || "Image");
-    hideHoverIcon();
+    openBoardPicker((boardId) => {
+      addImageToWhiteboard(img.src, img.alt || "Image", boardId);
+      hideHoverIcon();
+    });
   });
 }
 
@@ -83,20 +85,171 @@ function hideHoverIcon() {
   }
 }
 
+function openBoardPicker(onSelect) {
+  const existing = document.getElementById("moodbood-board-picker");
+  if (existing) existing.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "moodbood-board-picker";
+  overlay.style.cssText = `position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;background:rgba(0,0,0,0.45);`;
+  const panel = document.createElement("div");
+  panel.style.cssText = `width:min(90vw,520px);max-height:85vh;overflow:auto;background:#111827;color:#e5e7eb;border:1px solid rgba(255,255,255,0.1);border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,0.4);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;`;
+  panel.innerHTML = `
+    <div style="padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.08);display:flex;justify-content:space-between;align-items:center;">
+      <div style="font-weight:600;font-size:14px;">Choose a board</div>
+      <button id="mb-close" style="background:transparent;border:none;color:#9ca3af;font-size:18px;cursor:pointer;">×</button>
+    </div>
+    <div id="mb-cards" style="padding:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;"></div>
+    <div style="padding:10px 12px;display:flex;gap:8px;border-top:1px solid rgba(255,255,255,0.08);justify-content:flex-end;">
+      <button id="mb-new" style="margin-right:auto;background:#374151;border:none;color:#e5e7eb;padding:8px 10px;border-radius:8px;cursor:pointer;">New board</button>
+      <button id="mb-cancel" style="background:#374151;border:none;color:#e5e7eb;padding:8px 10px;border-radius:8px;cursor:pointer;">Cancel</button>
+    </div>`;
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  panel.querySelector("#mb-close")?.addEventListener("click", close);
+  panel.querySelector("#mb-cancel")?.addEventListener("click", close);
+  overlay.addEventListener("click", (ev) => {
+    if (ev.target === overlay) close();
+  });
+
+  API.storage.local.get(
+    { whiteboardBoards: { active: "default", list: ["default"] } },
+    async (obj) => {
+      const meta = obj.whiteboardBoards || {
+        active: "default",
+        list: ["default"],
+      };
+      const listEl = panel.querySelector("#mb-cards");
+      if (!meta.list || !meta.list.length) {
+        const empty = document.createElement("div");
+        empty.style.color = "#9ca3af";
+        empty.textContent = "No boards yet. Create one.";
+        listEl?.appendChild(empty);
+      } else {
+        for (const id of meta.list) {
+          const key = `whiteboardItems_${id}`;
+          const obj2 = await new Promise((r) =>
+            API.storage.local.get({ [key]: [] }, r)
+          );
+          const items = obj2[key] || [];
+          const imgs = items
+            .filter((it) => it && it.type === "image" && it.src)
+            .slice(0, 3)
+            .map((it) => it.src);
+
+          const card = document.createElement("button");
+          card.style.cssText =
+            "text-align:left;background:#0b1220;border:1px solid rgba(255,255,255,0.1);color:#e5e7eb;border-radius:12px;cursor:pointer;overflow:hidden;";
+
+          const collage = document.createElement("div");
+          collage.style.cssText =
+            "display:grid;grid-template-columns:2fr 1fr;grid-template-rows:repeat(2,80px);gap:2px;padding:8px;border-bottom:1px solid rgba(255,255,255,0.06);";
+
+          const left = document.createElement("div");
+          left.style.cssText =
+            "grid-row:1 / span 2; grid-column:1; border-radius:8px; overflow:hidden; background:#111827;";
+          if (imgs[0]) {
+            const im = document.createElement("img");
+            im.src = imgs[0];
+            im.referrerPolicy = "no-referrer";
+            im.style.cssText =
+              "width:100%;height:100%;object-fit:cover;display:block;";
+            left.appendChild(im);
+          } else {
+            const ph = document.createElement("div");
+            ph.style.cssText = "width:100%;height:100%;background:#111827;";
+            left.appendChild(ph);
+          }
+          const rt = document.createElement("div");
+          rt.style.cssText =
+            "grid-row:1; grid-column:2; border-radius:8px; overflow:hidden; background:#111827;";
+          if (imgs[1]) {
+            const im = document.createElement("img");
+            im.src = imgs[1];
+            im.referrerPolicy = "no-referrer";
+            im.style.cssText =
+              "width:100%;height:100%;object-fit:cover;display:block;";
+            rt.appendChild(im);
+          } else {
+            const ph = document.createElement("div");
+            ph.style.cssText = "width:100%;height:100%;background:#111827;";
+            rt.appendChild(ph);
+          }
+          const rb = document.createElement("div");
+          rb.style.cssText =
+            "grid-row:2; grid-column:2; border-radius:8px; overflow:hidden; background:#111827;";
+          if (imgs[2]) {
+            const im = document.createElement("img");
+            im.src = imgs[2];
+            im.referrerPolicy = "no-referrer";
+            im.style.cssText =
+              "width:100%;height:100%;object-fit:cover;display:block;";
+            rb.appendChild(im);
+          } else {
+            const ph = document.createElement("div");
+            ph.style.cssText = "width:100%;height:100%;background:#111827;";
+            rb.appendChild(ph);
+          }
+          collage.appendChild(left);
+          collage.appendChild(rt);
+          collage.appendChild(rb);
+
+          const metaRow = document.createElement("div");
+          metaRow.style.cssText = "padding:10px 12px;";
+          const title = document.createElement("div");
+          title.textContent = id;
+          title.style.cssText =
+            "font-weight:700;font-size:16px;margin-bottom:6px;";
+          const sub = document.createElement("div");
+          sub.style.cssText = "font-size:12px;color:#9ca3af;";
+          sub.textContent = `${items.length} Pins · Just now`;
+          metaRow.appendChild(title);
+          metaRow.appendChild(sub);
+
+          card.appendChild(collage);
+          card.appendChild(metaRow);
+          card.addEventListener("click", () => {
+            onSelect && onSelect(id);
+            overlay.remove();
+          });
+          listEl?.appendChild(card);
+        }
+      }
+
+      panel.querySelector("#mb-new")?.addEventListener("click", () => {
+        const name = prompt("New board name:");
+        if (!name) return;
+        const safe = name.trim().slice(0, 40);
+        if (!safe) return;
+        const next = new Set(meta.list || []);
+        next.add(safe);
+        const updated = { active: safe, list: Array.from(next) };
+        API.storage.local.set({ whiteboardBoards: updated }, () => {
+          overlay.remove();
+          openBoardPicker(onSelect);
+        });
+      });
+    }
+  );
+}
+
 // Add image to whiteboard
-async function addImageToWhiteboard(src, alt) {
+async function addImageToWhiteboard(src, alt, boardId) {
   try {
     console.log("Sending message to background script:", {
       action: "addImageToWhiteboard",
       src: src,
       alt: alt,
+      boardId,
     });
 
     // Send message to background script to add image
     API.runtime.sendMessage({
       action: "addImageToWhiteboard",
-      src: src,
-      alt: alt,
+      src,
+      alt,
+      boardId,
     });
 
     // Show visual feedback

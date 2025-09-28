@@ -5,17 +5,22 @@ const API = typeof browser !== "undefined" ? browser : chrome;
 const BOARD = document.getElementById("board");
 const BOARD_CONTENT = document.getElementById("boardContent");
 const URL_INPUT = document.getElementById("imageUrl");
-const ADD_URL_BTN = document.getElementById("addUrlBtn");
+// const ADD_URL_BTN = document.getElementById("addUrlBtn");
 const FILE_INPUT = document.getElementById("fileInput");
 const CLEAR_BTN = document.getElementById("clearBtn");
-const ZOOM_IN_BTN = document.getElementById("zoomInBtn");
-const ZOOM_OUT_BTN = document.getElementById("zoomOutBtn");
-const ZOOM_LEVEL = document.getElementById("zoomLevel");
+const ZOOM_IN_BTN = null;
+const ZOOM_OUT_BTN = null;
+const ZOOM_LEVEL = { textContent: "" };
 const SNAP_TOGGLE = document.getElementById("snapToggle");
 const GRID_TYPE = document.getElementById("gridType");
 const THEME_SELECT = document.getElementById("themeSelect");
 const EXPORT_SELECT = document.getElementById("exportSelect");
 const EXPORT_BTN = document.getElementById("exportBtn");
+const BOARD_SELECT = null;
+const NEW_BOARD_BTN = document.getElementById("newBoardBtn");
+const DELETE_BOARD_BTN = document.getElementById("deleteBoardBtn");
+const BOARD_PICKER_BTN = document.getElementById("boardPickerBtn");
+let isEmptyState = false;
 
 // Zoom and pan state
 let scale = 1;
@@ -84,9 +89,13 @@ function applyGridType(type) {
 // Theme selection persistence and application
 (async function initTheme() {
   try {
-    const { boardTheme } = await API.storage.local.get({
-      boardTheme: "darkgray",
-    });
+    const activeId = await getActiveBoardId();
+    let boardTheme = "darkgray";
+    if (activeId) {
+      const themeKey = `whiteboardTheme_${activeId}`;
+      const obj = await API.storage.local.get({ [themeKey]: "darkgray" });
+      boardTheme = obj[themeKey] || "darkgray";
+    }
     applyTheme(boardTheme);
     if (THEME_SELECT) THEME_SELECT.value = boardTheme;
   } catch {}
@@ -95,7 +104,11 @@ function applyGridType(type) {
       const val = /** @type {HTMLSelectElement} */ (e.target).value;
       applyTheme(val);
       try {
-        await API.storage.local.set({ boardTheme: val });
+        const activeId = await getActiveBoardId();
+        if (activeId) {
+          const themeKey = `whiteboardTheme_${activeId}`;
+          await API.storage.local.set({ [themeKey]: val });
+        }
       } catch {}
     });
   }
@@ -583,14 +596,17 @@ let zIndexCounter = 10; // Start reasonable; we'll keep increasing on clicks
 /** @typedef {{ id:string, type:'image'|'video'|'youtube'|'link', x:number, y:number, z:number, w:number, h:number, src?:string, url?:string, title?:string }} Item */
 
 async function readItems() {
-  const { whiteboardItems } = await API.storage.local.get({
-    whiteboardItems: [],
-  });
-  return Array.isArray(whiteboardItems) ? whiteboardItems : [];
+  const boardId = await getActiveBoardId();
+  const key = `whiteboardItems_${boardId}`;
+  const obj = await API.storage.local.get({ [key]: [] });
+  const items = obj[key];
+  return Array.isArray(items) ? items : [];
 }
 
 async function writeItems(items) {
-  await API.storage.local.set({ whiteboardItems: items });
+  const boardId = await getActiveBoardId();
+  const key = `whiteboardItems_${boardId}`;
+  await API.storage.local.set({ [key]: items });
 }
 
 function createItemElement(item) {
@@ -755,15 +771,14 @@ function enableDrag(node, item) {
     document.removeEventListener("mousemove", onMouseMove);
     document.removeEventListener("mouseup", onMouseUp);
 
-    // Persist final position without triggering re-render
+    // Persist final position to the current board without triggering re-render
     const items = await readItems();
     const idx = items.findIndex((i) => i.id === item.id);
     if (idx !== -1) {
       items[idx].x = parseInt(node.style.left, 10) || 0;
       items[idx].y = parseInt(node.style.top, 10) || 0;
       items[idx].z = item.z;
-      // Update storage directly without using writeItems to avoid triggering listener
-      await API.storage.local.set({ whiteboardItems: items });
+      await writeItems(items);
     }
 
     // Clear the flag after a small delay to allow storage update to complete
@@ -927,6 +942,25 @@ async function render() {
   }
 
   BOARD_CONTENT.innerHTML = "";
+  // If there are no boards at all, show empty state with a create button
+  const meta = await getBoardsMeta();
+  if (!meta.list || meta.list.length === 0) {
+    isEmptyState = true;
+    // Disable grid/background pattern and panning cursor
+    BOARD.classList.add("wb-no-pan");
+    BOARD_CONTENT.classList.add("grid-none");
+    const empty = document.createElement("div");
+    empty.className = "wb-empty";
+    const btn = document.createElement("button");
+    btn.textContent = "Create a new board";
+    btn.addEventListener("click", createBoard);
+    empty.appendChild(btn);
+    BOARD_CONTENT.appendChild(empty);
+    return;
+  }
+
+  isEmptyState = false;
+  BOARD.classList.remove("wb-no-pan");
   const items = await readItems();
   let mutated = false;
   for (const item of items) {
@@ -1214,7 +1248,7 @@ async function handleFiles(files) {
 }
 
 // Events
-ADD_URL_BTN.addEventListener("click", () => addUrl(URL_INPUT.value));
+// Removed Add URL button
 URL_INPUT.addEventListener("keydown", (e) => {
   if (e.key === "Enter") addUrl(URL_INPUT.value);
 });
@@ -1230,8 +1264,7 @@ CLEAR_BTN.addEventListener("click", async () => {
 });
 
 // Zoom events
-ZOOM_IN_BTN.addEventListener("click", zoomIn);
-ZOOM_OUT_BTN.addEventListener("click", zoomOut);
+// Zoom controls removed from top bar
 BOARD.addEventListener("wheel", handleWheelZoom, { passive: false });
 
 // Panning events
@@ -1412,6 +1445,7 @@ function resetZoom() {
 
 // Handle mouse wheel zoom
 function handleWheelZoom(e) {
+  if (isEmptyState) return;
   e.preventDefault();
 
   const local = clientToLocal(e.clientX, e.clientY);
@@ -1433,6 +1467,7 @@ function handleWheelZoom(e) {
 
 // Panning functionality
 function startPan(e) {
+  if (isEmptyState) return;
   // Only start panning if not clicking on an item
   if (e.target.closest(".wb-item")) return;
 
@@ -1982,13 +2017,205 @@ async function initializeZIndexCounter() {
 // (removed) addTestButton - debug helper no longer needed
 
 // Initial render and subscribe to storage changes from background
-initializeZIndexCounter().then(() => {
+initializeZIndexCounter().then(async () => {
+  await populateBoardsUI();
   render();
   centerIfDefault();
   applyTransform(); // Initialize transform
 });
-API.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.whiteboardItems) {
+API.storage.onChanged.addListener(async (changes, area) => {
+  if (area !== "local") return;
+  const activeId = await getActiveBoardId();
+  const key = `whiteboardItems_${activeId}`;
+  if (changes[key]) {
     render();
   }
 });
+
+// Multiple boards management
+async function getBoardsMeta() {
+  const { whiteboardBoards } = await API.storage.local.get({
+    whiteboardBoards: { active: null, list: [] },
+  });
+  if (!whiteboardBoards || !Array.isArray(whiteboardBoards.list)) {
+    return { active: null, list: [] };
+  }
+  return whiteboardBoards;
+}
+
+async function setBoardsMeta(meta) {
+  await API.storage.local.set({ whiteboardBoards: meta });
+}
+
+async function getActiveBoardId() {
+  const meta = await getBoardsMeta();
+  return meta.active || null;
+}
+
+async function populateBoardsUI() {
+  const meta = await getBoardsMeta();
+  if (!BOARD_SELECT) return;
+  BOARD_SELECT.innerHTML = "";
+  for (const id of meta.list) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = id;
+    if (id === meta.active) opt.selected = true;
+    BOARD_SELECT.appendChild(opt);
+  }
+}
+
+async function switchBoard(id) {
+  const meta = await getBoardsMeta();
+  if (!meta.list.includes(id)) return;
+  meta.active = id;
+  await setBoardsMeta(meta);
+  await populateBoardsUI();
+  // Load per-board theme
+  try {
+    const themeKey = `whiteboardTheme_${id}`;
+    const obj = await API.storage.local.get({ [themeKey]: "darkgray" });
+    applyTheme(obj[themeKey] || "darkgray");
+    if (THEME_SELECT) THEME_SELECT.value = obj[themeKey] || "darkgray";
+  } catch {}
+  await render();
+}
+
+async function createBoard() {
+  const name = prompt("New board name:");
+  if (!name) return;
+  const safe = name.trim().slice(0, 40);
+  if (!safe) return;
+  const meta = await getBoardsMeta();
+  if (!meta.list.includes(safe)) meta.list.push(safe);
+  meta.active = safe;
+  await setBoardsMeta(meta);
+  await populateBoardsUI();
+  await render();
+}
+
+async function deleteBoard() {
+  const meta = await getBoardsMeta();
+  if (!confirm(`Delete board "${meta.active}"?`)) return;
+  const key = `whiteboardItems_${meta.active}`;
+  await API.storage.local.remove(key);
+  meta.list = meta.list.filter((x) => x !== meta.active);
+  meta.active = meta.list[0] || null;
+  await setBoardsMeta(meta);
+  await populateBoardsUI();
+  await render();
+}
+
+// Wire board UI
+if (BOARD_SELECT) {
+  BOARD_SELECT.addEventListener("change", async (e) => {
+    const id = /** @type {HTMLSelectElement} */ (e.target).value;
+    await switchBoard(id);
+  });
+}
+if (NEW_BOARD_BTN) NEW_BOARD_BTN.addEventListener("click", createBoard);
+if (DELETE_BOARD_BTN) DELETE_BOARD_BTN.addEventListener("click", deleteBoard);
+if (BOARD_PICKER_BTN) {
+  BOARD_PICKER_BTN.addEventListener("click", () => {
+    // Reuse the content-script style picker in-page
+    (function openBoardPickerInline(onSelect) {
+      const existing = document.getElementById("wb-board-picker");
+      if (existing) existing.remove();
+      const overlay = document.createElement("div");
+      overlay.id = "wb-board-picker";
+      overlay.style.cssText =
+        "position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;background:rgba(0,0,0,0.45)";
+      const panel = document.createElement("div");
+      panel.style.cssText =
+        "width:min(90vw,520px);max-height:85vh;overflow:auto;background:#111827;color:#e5e7eb;border:1px solid rgba(255,255,255,0.1);border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,0.4);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;";
+      panel.innerHTML =
+        '<div style="padding:12px 14px;border-bottom:1px solid rgba(255,255,255,0.08);display:flex;justify-content:space-between;align-items:center;"><div style="font-weight:600;font-size:14px;">Choose a board</div><button id="wb-close" style="background:transparent;border:none;color:#9ca3af;font-size:18px;cursor:pointer;">×</button></div><div id="wb-cards" style="padding:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;"></div><div style="padding:10px 12px;display:flex;gap:8px;border-top:1px solid rgba(255,255,255,0.08);justify-content:flex-end;"><button id="wb-new" style="margin-right:auto;background:#374151;border:none;color:#e5e7eb;padding:8px 10px;border-radius:8px;cursor:pointer;">New board</button><button id="wb-cancel" style="background:#374151;border:none;color:#e5e7eb;padding:8px 10px;border-radius:8px;cursor:pointer;">Cancel</button></div>';
+      overlay.appendChild(panel);
+      document.body.appendChild(overlay);
+      const close = () => overlay.remove();
+      panel.querySelector("#wb-close")?.addEventListener("click", close);
+      panel.querySelector("#wb-cancel")?.addEventListener("click", close);
+      overlay.addEventListener("click", (ev) => {
+        if (ev.target === overlay) close();
+      });
+      (async () => {
+        const meta = await getBoardsMeta();
+        const listEl = panel.querySelector("#wb-cards");
+        if (!meta.list || !meta.list.length) {
+          const empty = document.createElement("div");
+          empty.style.color = "#9ca3af";
+          empty.textContent = "No boards yet. Create one.";
+          listEl?.appendChild(empty);
+        } else {
+          for (const id of meta.list) {
+            const key = `whiteboardItems_${id}`;
+            const obj2 = await API.storage.local.get({ [key]: [] });
+            const items = obj2[key] || [];
+            const imgs = items
+              .filter((it) => it && it.type === "image" && it.src)
+              .slice(0, 3)
+              .map((it) => it.src);
+            const card = document.createElement("button");
+            card.style.cssText =
+              "text-align:left;background:#0b1220;border:1px solid rgba(255,255,255,0.1);color:#e5e7eb;border-radius:12px;cursor:pointer;overflow:hidden;";
+            const collage = document.createElement("div");
+            collage.style.cssText =
+              "display:grid;grid-template-columns:2fr 1fr;grid-template-rows:repeat(2,80px);gap:2px;padding:8px;border-bottom:1px solid rgba(255,255,255,0.06);";
+            const cell = (area, src) => {
+              const d = document.createElement("div");
+              d.style.cssText =
+                area + "border-radius:8px;overflow:hidden;background:#111827;";
+              if (src) {
+                const im = document.createElement("img");
+                im.src = src;
+                im.referrerPolicy = "no-referrer";
+                im.style.cssText =
+                  "width:100%;height:100%;object-fit:cover;display:block;";
+                d.appendChild(im);
+              }
+              return d;
+            };
+            collage.appendChild(
+              cell("grid-row:1 / span 2; grid-column:1; ", imgs[0])
+            );
+            collage.appendChild(cell("grid-row:1; grid-column:2; ", imgs[1]));
+            collage.appendChild(cell("grid-row:2; grid-column:2; ", imgs[2]));
+            const metaRow = document.createElement("div");
+            metaRow.style.cssText = "padding:10px 12px;";
+            const title = document.createElement("div");
+            title.textContent = id;
+            title.style.cssText =
+              "font-weight:700;font-size:16px;margin-bottom:6px;";
+            const sub = document.createElement("div");
+            sub.style.cssText = "font-size:12px;color:#9ca3af;";
+            sub.textContent = `${items.length} Pins · Just now`;
+            metaRow.appendChild(title);
+            metaRow.appendChild(sub);
+            card.appendChild(collage);
+            card.appendChild(metaRow);
+            card.addEventListener("click", async () => {
+              await switchBoard(id);
+              close();
+            });
+            listEl?.appendChild(card);
+          }
+        }
+        panel.querySelector("#wb-new")?.addEventListener("click", async () => {
+          const name = prompt("New board name:");
+          if (!name) return;
+          const safe = name.trim().slice(0, 40);
+          if (!safe) return;
+          const m = await getBoardsMeta();
+          if (!m.list.includes(safe)) m.list.push(safe);
+          m.active = safe;
+          await setBoardsMeta(m);
+          close();
+          openBoardPickerInline(onSelect);
+        });
+      })();
+    })(async (chosenId) => {
+      if (!chosenId) return;
+      await switchBoard(chosenId);
+    });
+  });
+}
