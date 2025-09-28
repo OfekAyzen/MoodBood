@@ -12,6 +12,10 @@ const ZOOM_IN_BTN = document.getElementById("zoomInBtn");
 const ZOOM_OUT_BTN = document.getElementById("zoomOutBtn");
 const ZOOM_LEVEL = document.getElementById("zoomLevel");
 const SNAP_TOGGLE = document.getElementById("snapToggle");
+const GRID_TYPE = document.getElementById("gridType");
+const THEME_SELECT = document.getElementById("themeSelect");
+const EXPORT_SELECT = document.getElementById("exportSelect");
+const EXPORT_BTN = document.getElementById("exportBtn");
 
 // Zoom and pan state
 let scale = 1;
@@ -52,6 +56,245 @@ let snapToGridEnabled = true;
     });
   }
 })();
+
+// Grid type setting (lines | dots | none)
+(async function initGridType() {
+  try {
+    const { gridType } = await API.storage.local.get({ gridType: "lines" });
+    applyGridType(gridType);
+    if (GRID_TYPE) GRID_TYPE.value = gridType;
+  } catch {}
+  if (GRID_TYPE) {
+    GRID_TYPE.addEventListener("change", async (e) => {
+      const val = /** @type {HTMLSelectElement} */ (e.target).value;
+      applyGridType(val);
+      try {
+        await API.storage.local.set({ gridType: val });
+      } catch {}
+    });
+  }
+})();
+
+function applyGridType(type) {
+  BOARD_CONTENT.classList.remove("grid-dots", "grid-none");
+  if (type === "dots") BOARD_CONTENT.classList.add("grid-dots");
+  else if (type === "none") BOARD_CONTENT.classList.add("grid-none");
+}
+
+// Theme selection persistence and application
+(async function initTheme() {
+  try {
+    const { boardTheme } = await API.storage.local.get({
+      boardTheme: "darkgray",
+    });
+    applyTheme(boardTheme);
+    if (THEME_SELECT) THEME_SELECT.value = boardTheme;
+  } catch {}
+  if (THEME_SELECT) {
+    THEME_SELECT.addEventListener("change", async (e) => {
+      const val = /** @type {HTMLSelectElement} */ (e.target).value;
+      applyTheme(val);
+      try {
+        await API.storage.local.set({ boardTheme: val });
+      } catch {}
+    });
+  }
+})();
+
+function applyTheme(theme) {
+  // remove any previous theme- classes from body
+  document.body.classList.forEach((cls) => {
+    if (cls.startsWith("theme-")) document.body.classList.remove(cls);
+  });
+  document.body.classList.add(`theme-${theme}`);
+}
+
+// Export board to image/PDF
+function getBoardBBox() {
+  const items = BOARD_CONTENT.querySelectorAll(".wb-item");
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+  items.forEach((el) => {
+    const x = parseInt(el.style.left, 10) || 0;
+    const y = parseInt(el.style.top, 10) || 0;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  });
+  if (!isFinite(minX)) return { x: 0, y: 0, w: 1024, h: 768 };
+  return {
+    x: minX,
+    y: minY,
+    w: Math.max(1, maxX - minX),
+    h: Math.max(1, maxY - minY),
+  };
+}
+
+async function exportBoard(fmt) {
+  const bbox = getBoardBBox();
+  const canvas = document.createElement("canvas");
+  // Render at up to 4K on the longest side for higher quality
+  const targetMax = 3840;
+  const maxDim = Math.max(bbox.w, bbox.h);
+  const scaleFactor = fmt === "pdf" ? Math.max(1, targetMax / maxDim) : 1;
+  canvas.width = Math.ceil(bbox.w * scaleFactor);
+  canvas.height = Math.ceil(bbox.h * scaleFactor);
+  const ctx = canvas.getContext("2d");
+
+  // Fill background with current theme color
+  const bgColor = getComputedStyle(BOARD_CONTENT).backgroundColor || "#ffffff";
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Scale context so we can draw using unscaled item coords
+  if (scaleFactor !== 1) ctx.scale(scaleFactor, scaleFactor);
+
+  // Draw each item
+  const items = Array.from(BOARD_CONTENT.querySelectorAll(".wb-item"));
+  for (const el of items) {
+    const x = (parseInt(el.style.left, 10) || 0) - bbox.x;
+    const y = (parseInt(el.style.top, 10) || 0) - bbox.y;
+    const w = el.offsetWidth;
+    const h = el.offsetHeight;
+    // Images
+    const img = el.querySelector("img");
+    if (img && img.src) {
+      await new Promise((resolve) => {
+        if (img.complete) return resolve();
+        img.onload = () => resolve();
+        img.onerror = () => resolve();
+      });
+      try {
+        ctx.drawImage(img, x, y, w, h);
+      } catch {}
+      continue;
+    }
+    // Video/iframe cannot be drawn directly; draw placeholder
+    const vid = el.querySelector("video,iframe");
+    if (vid) {
+      ctx.fillStyle = "#000000";
+      ctx.fillRect(x, y, w, h);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "14px sans-serif";
+      ctx.fillText("Embedded media", x + 8, y + 22);
+      continue;
+    }
+    // Links or others
+    ctx.fillStyle = "#111827";
+    ctx.fillRect(x, y, w, h);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = "14px sans-serif";
+    ctx.fillText("Item", x + 8, y + 22);
+  }
+
+  if (fmt === "pdf") {
+    // Build a one-page PDF embedding the board image (use JPEG for smaller output)
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    const pdfBlob = await canvasToPdfBlob(canvas.width, canvas.height, dataUrl);
+    downloadBlob(pdfBlob, `whiteboard.pdf`);
+  } else {
+    const mime = fmt === "jpeg" ? "image/jpeg" : "image/png";
+    const quality = fmt === "jpeg" ? 0.92 : 1.0;
+    const dataUrl = canvas.toDataURL(mime, quality);
+    downloadDataUrl(dataUrl, `whiteboard.${fmt}`);
+  }
+}
+
+function downloadDataUrl(dataUrl, filename) {
+  const a = document.createElement("a");
+  a.href = dataUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  downloadDataUrl(url, filename);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function canvasToPdfBlob(w, h, imgDataUrl) {
+  // Minimal PDF wrapper around an image. For rich PDFs consider jsPDF later.
+  const pxPerPt = 96 / 72; // 1pt = 1/72in; canvas is 96dpi typical
+  const pageWpt = Math.round(w / pxPerPt);
+  const pageHpt = Math.round(h / pxPerPt);
+  const imgData = atob(imgDataUrl.split(",")[1]);
+  const imgBytes = new Uint8Array(imgData.length);
+  for (let i = 0; i < imgData.length; i++) imgBytes[i] = imgData.charCodeAt(i);
+
+  // Very basic PDF (single image)
+  function str2buf(s) {
+    return new TextEncoder().encode(s);
+  }
+  const header = `%PDF-1.3\n`;
+  const objects = [];
+  const xref = [];
+  let offset = 0;
+  function addObject(content) {
+    xref.push(offset);
+    const buf = str2buf(content);
+    objects.push(buf);
+    offset += buf.length;
+  }
+
+  addObject(`1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`);
+  addObject(`2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n`);
+  addObject(
+    `3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWpt} ${pageHpt}] /Resources << /XObject <</Im0 4 0 R>> /ProcSet [/PDF /ImageC] >> /Contents 5 0 R >>\nendobj\n`
+  );
+  addObject(
+    `4 0 obj\n<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imgBytes.length} >>\nstream\n`
+  );
+  const imgStreamStart = offset + objects[objects.length - 1].length;
+  const imgBuf = imgBytes;
+  offset =
+    imgStreamStart + imgBuf.length + str2buf(`\nendstream\nendobj\n`).length;
+  xref.push(imgStreamStart - objects[objects.length - 1].length); // placeholder, adjust later
+  objects.push(imgBuf);
+  addObject(`\nendstream\nendobj\n`);
+  addObject(
+    `5 0 obj\n<< /Length 50 >>\nstream\nq\n${pageWpt} 0 0 ${pageHpt} 0 0 cm\n/Im0 Do\nQ\nendstream\nendobj\n`
+  );
+
+  // Build xref table
+  let pdf = str2buf(header);
+  let xrefPos = pdf.length;
+  for (const obj of objects) {
+    pdf = concatBuf(pdf, obj);
+  }
+  const xrefTable =
+    `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n` +
+    xref
+      .map((off, i) => `${String(off).padStart(10, "0")} 00000 n \n`)
+      .join("");
+  const trailer = `trailer\n<< /Size ${
+    objects.length + 1
+  } /Root 1 0 R >>\nstartxref\n${pdf.length}\n%%EOF`;
+  pdf = concatBuf(pdf, str2buf(xrefTable));
+  pdf = concatBuf(pdf, str2buf(trailer));
+  return new Blob([pdf], { type: "application/pdf" });
+}
+
+function concatBuf(a, b) {
+  const c = new Uint8Array(a.length + b.length);
+  c.set(a, 0);
+  c.set(b, a.length);
+  return c;
+}
+
+if (EXPORT_BTN) {
+  EXPORT_BTN.addEventListener("click", async () => {
+    const fmt = (EXPORT_SELECT && EXPORT_SELECT.value) || "png";
+    await exportBoard(fmt);
+  });
+}
 
 // Alignment guides layer
 const guidesLayer = document.createElement("div");
@@ -362,6 +605,8 @@ function createItemElement(item) {
 
   const body = node.querySelector(".wb-item-body");
   if (item.type === "image" && item.src) {
+    // Mark node as image item to allow transparent background styling
+    node.classList.add("wb-item-image");
     const img = document.createElement("img");
     img.referrerPolicy = "no-referrer";
     img.src = item.src;
@@ -683,12 +928,27 @@ async function render() {
 
   BOARD_CONTENT.innerHTML = "";
   const items = await readItems();
+  let mutated = false;
   for (const item of items) {
+    if (item.spawnAtCenter) {
+      const view = BOARD.getBoundingClientRect();
+      const local = clientToLocal(
+        view.left + view.width / 2,
+        view.top + view.height / 2
+      );
+      item.x = Math.max(0, Math.floor(local.x - (item.w || 200) / 2));
+      item.y = Math.max(0, Math.floor(local.y - (item.h || 150) / 2));
+      delete item.spawnAtCenter;
+      mutated = true;
+    }
     BOARD_CONTENT.appendChild(createItemElement(item));
   }
   // Re-add guides layer after clearing content
   if (guidesLayer) {
     BOARD_CONTENT.appendChild(guidesLayer);
+  }
+  if (mutated) {
+    await writeItems(items);
   }
 }
 
@@ -913,14 +1173,19 @@ async function addUrl(urlText) {
 }
 
 function createBase(partial) {
+  // Place new item at board center (viewport center translated to content coords)
+  const view = BOARD.getBoundingClientRect();
+  const centerClientX = view.left + view.width / 2;
+  const centerClientY = view.top + view.height / 2;
+  const local = clientToLocal(centerClientX, centerClientY);
+  const baseX = Math.max(0, Math.floor(local.x - (partial.w || 200) / 2));
+  const baseY = Math.max(0, Math.floor(local.y - (partial.h || 150) / 2));
+  const cx = snapToGridEnabled ? snapToGrid(baseX) : baseX;
+  const cy = snapToGridEnabled ? snapToGrid(baseY) : baseY;
   return {
     id: `wb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    x: snapToGridEnabled
-      ? snapToGrid(Math.floor(80 + Math.random() * 200))
-      : Math.floor(80 + Math.random() * 200),
-    y: snapToGridEnabled
-      ? snapToGrid(Math.floor(80 + Math.random() * 140))
-      : Math.floor(80 + Math.random() * 140),
+    x: cx,
+    y: cy,
     z: ++zIndexCounter, // Use the global counter
     ...partial,
   };
@@ -1081,6 +1346,17 @@ function bringToFront(itemElement) {
 
 // Apply transform to the board content
 function applyTransform() {
+  // Clamp translate so content always covers the viewport (no empty spaces)
+  const view = BOARD.getBoundingClientRect();
+  const contentW = BOARD_CONTENT.scrollWidth;
+  const contentH = BOARD_CONTENT.scrollHeight;
+  const scaledW = contentW * scale;
+  const scaledH = contentH * scale;
+  const minTx = Math.min(0, view.width - scaledW);
+  const minTy = Math.min(0, view.height - scaledH);
+  tx = Math.min(0, Math.max(minTx, tx));
+  ty = Math.min(0, Math.max(minTy, ty));
+
   BOARD_CONTENT.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
   ZOOM_LEVEL.textContent = Math.round(scale * 100) + "%";
 
@@ -1090,6 +1366,19 @@ function applyTransform() {
   } else {
     BOARD.classList.remove("zoomed");
   }
+}
+
+// Center the board content on first load if at default transform
+function centerIfDefault() {
+  if (scale !== 1 || tx !== 0 || ty !== 0) return;
+  const view = BOARD.getBoundingClientRect();
+  const contentW = BOARD_CONTENT.scrollWidth;
+  const contentH = BOARD_CONTENT.scrollHeight;
+  const scaledW = contentW * scale;
+  const scaledH = contentH * scale;
+  // Center offsets (will be clamped in applyTransform)
+  tx = (view.width - scaledW) / 2;
+  ty = (view.height - scaledH) / 2;
 }
 
 // Convert client coordinates to local content coordinates
@@ -1695,6 +1984,7 @@ async function initializeZIndexCounter() {
 // Initial render and subscribe to storage changes from background
 initializeZIndexCounter().then(() => {
   render();
+  centerIfDefault();
   applyTransform(); // Initialize transform
 });
 API.storage.onChanged.addListener((changes, area) => {

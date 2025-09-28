@@ -45,8 +45,8 @@ async function writeItems(items) {
 function createItemBase(partial) {
   return {
     id: `wb_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    x: Math.floor(60 + Math.random() * 200),
-    y: Math.floor(60 + Math.random() * 120),
+    // Let the frontend place at center of board on spawn
+    spawnAtCenter: true,
     z: Date.now(),
     ...partial,
   };

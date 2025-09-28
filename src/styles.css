@@ -116,6 +116,7 @@ body {
   position: relative;
   width: 100%;
   height: 100%;
+  /* Default grid: lines */
   background-image: linear-gradient(
       rgba(255, 255, 255, 0.03) 1px,
       transparent 1px
@@ -126,6 +127,49 @@ body {
   transform-origin: 0 0;
   min-width: 5000px;
   min-height: 5000px;
+}
+
+/* Theme backgrounds for board */
+.theme-white .wb-board-content {
+  background-color: #ffffff;
+}
+.theme-lightgray .wb-board-content {
+  background-color: #f3f4f6;
+}
+.theme-darkgray .wb-board-content {
+  background-color: #111827;
+}
+.theme-black .wb-board-content {
+  background-color: #000000;
+}
+.theme-lightblue .wb-board-content {
+  background-color: #e0f2fe;
+}
+.theme-lightgreen .wb-board-content {
+  background-color: #dcfce7;
+}
+.theme-lightyellow .wb-board-content {
+  background-color: #fef9c3;
+}
+.theme-lightpink .wb-board-content {
+  background-color: #ffe4e6;
+}
+.theme-lightpurple .wb-board-content {
+  background-color: #f3e8ff;
+}
+
+/* Dots grid */
+.grid-dots {
+  background-image: radial-gradient(
+    rgba(255, 255, 255, 0.15) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+}
+
+/* No grid */
+.grid-none {
+  background-image: none !important;
 }
 
 /* Grid alignment guides (shown while dragging with snap off) */
@@ -176,6 +220,31 @@ body {
   background: rgba(59, 130, 246, 0.95);
   transform: translateX(-50%);
 }
+
+/* Improve grid contrast on light themes */
+.theme-white .wb-board-content:not(.grid-dots):not(.grid-none),
+.theme-lightgray .wb-board-content:not(.grid-dots):not(.grid-none),
+.theme-lightblue .wb-board-content:not(.grid-dots):not(.grid-none),
+.theme-lightgreen .wb-board-content:not(.grid-dots):not(.grid-none),
+.theme-lightyellow .wb-board-content:not(.grid-dots):not(.grid-none),
+.theme-lightpink .wb-board-content:not(.grid-dots):not(.grid-none),
+.theme-lightpurple .wb-board-content:not(.grid-dots):not(.grid-none) {
+  background-image: linear-gradient(rgba(0, 0, 0, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.08) 1px, transparent 1px);
+}
+
+.theme-white .wb-board-content.grid-dots,
+.theme-lightgray .wb-board-content.grid-dots,
+.theme-lightblue .wb-board-content.grid-dots,
+.theme-lightgreen .wb-board-content.grid-dots,
+.theme-lightyellow .wb-board-content.grid-dots,
+.theme-lightpink .wb-board-content.grid-dots,
+.theme-lightpurple .wb-board-content.grid-dots {
+  background-image: radial-gradient(
+    rgba(0, 0, 0, 0.35) 1px,
+    transparent 1px
+  ) !important;
+}
 /* No numeric labels for distance */
 .wb-guide-vert {
   top: 0;
@@ -204,6 +273,17 @@ body {
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
   overflow: hidden;
   cursor: grab;
+}
+
+/* Image items: transparent background so PNG alpha shows */
+.wb-item.wb-item-image,
+.wb-item.wb-item-image:hover,
+.wb-item.wb-item-image:focus-within,
+.wb-item.wb-item-image:active {
+  background: transparent;
+  border-color: transparent !important;
+  box-shadow: none !important;
+  outline: none !important;
 }
 
 .wb-item:hover {

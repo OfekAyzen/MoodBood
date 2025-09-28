@@ -32,6 +32,37 @@
           <input id="snapToggle" type="checkbox" />
           <span>Snap to grid</span>
         </label>
+        <label class="wb-select">
+          <span>Grid:</span>
+          <select id="gridType">
+            <option value="lines">Lines</option>
+            <option value="dots">Dots</option>
+            <option value="none">None</option>
+          </select>
+        </label>
+        <label class="wb-select">
+          <span>Theme:</span>
+          <select id="themeSelect">
+            <option value="white">White</option>
+            <option value="lightgray">Light Gray</option>
+            <option value="darkgray">Dark Gray</option>
+            <option value="black">Black</option>
+            <option value="lightblue">Light Blue</option>
+            <option value="lightgreen">Light Green</option>
+            <option value="lightyellow">Light Yellow</option>
+            <option value="lightpink">Light Pink</option>
+            <option value="lightpurple">Light Purple</option>
+          </select>
+        </label>
+        <label class="wb-select">
+          <span>Export:</span>
+          <select id="exportSelect">
+            <option value="png">PNG</option>
+            <option value="jpeg">JPEG</option>
+            <option value="pdf">PDF</option>
+          </select>
+          <button id="exportBtn">Save</button>
+        </label>
         <span class="hint">Tip: paste image or screenshot (Ctrl+V)</span>
       </div>
     </header>
